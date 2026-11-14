@@ -1,31 +1,63 @@
 import { cert, getApps, initializeApp } from "firebase-admin/app";
 import { getAuth } from "firebase-admin/auth";
-import { initializeFirestore, getFirestore } from "firebase-admin/firestore";
+import { getFirestore, initializeFirestore } from "firebase-admin/firestore";
 
-const projectId = process.env.FIREBASE_PROJECT_ID;
-const clientEmail = process.env.FIREBASE_CLIENT_EMAIL;
-const privateKey = process.env.FIREBASE_PRIVATE_KEY?.replace(/\\n/g, "\n");
+function getFirebaseAdminApp() {
+  if (getApps().length > 0) {
+    return getApps()[0];
+  }
 
-if (!projectId || !clientEmail || !privateKey) {
-  throw new Error(
-    `Variabel Firebase belum lengkap di server: projectId=${Boolean(projectId)}, clientEmail=${Boolean(clientEmail)}, privateKey=${Boolean(privateKey)}`
-  );
+  const projectId = process.env.FIREBASE_PROJECT_ID?.trim();
+  const clientEmail = process.env.FIREBASE_CLIENT_EMAIL?.trim();
+  const rawKey = process.env.FIREBASE_PRIVATE_KEY?.trim();
+
+  // Bersihkan tanda petik jika ikut tersalin di Vercel, lalu ubah \n menjadi baris baru asli
+  const privateKey = rawKey
+    ?.replace(/^["']|["']$/g, "")
+    .replace(/\\n/g, "\n");
+
+  if (!projectId || !clientEmail || !privateKey) {
+    throw new Error(
+      `Variabel Vercel belum terbaca lengkap: FIREBASE_PROJECT_ID=${Boolean(projectId)}, FIREBASE_CLIENT_EMAIL=${Boolean(clientEmail)}, FIREBASE_PRIVATE_KEY=${Boolean(privateKey)}`
+    );
+  }
+
+  return initializeApp({
+    credential: cert({
+      projectId,
+      clientEmail,
+      privateKey,
+    }),
+  });
 }
 
-const isNewApp = getApps().length === 0;
-const firebaseAdminApp = isNewApp
-  ? initializeApp({
-      credential: cert({
-        projectId,
-        clientEmail,
-        privateKey,
-      }),
-    })
-  : getApps()[0];
+// Inisialisasi dilakukan saat dipanggil agar error bisa ditangkap oleh try/catch
+export function getAdminDb() {
+  const isFirst = getApps().length === 0;
+  const app = getFirebaseAdminApp();
+  return isFirst
+    ? initializeFirestore(app, { preferRest: true })
+    : getFirestore(app);
+}
 
-// Gunakan preferRest: true agar koneksi ke Firestore di Vercel cepat dan tidak menggantung
-export const adminDb = isNewApp
-  ? initializeFirestore(firebaseAdminApp, { preferRest: true })
-  : getFirestore(firebaseAdminApp);
+export function getAdminAuth() {
+  const app = getFirebaseAdminApp();
+  return getAuth(app);
+}
 
-export const adminAuth = getAuth(firebaseAdminApp);
+// Pertahankan ekspor lama untuk kompatibilitas
+export const adminDb = new Proxy({} as ReturnType<typeof getFirestore>, {
+  get(_target, prop) {
+    const db = getAdminDb();
+    const value = db[prop as keyof typeof db];
+    return typeof value === "function" ? value.bind(db) : value;
+  },
+});
+
+export const adminAuth = new Proxy({} as ReturnType<typeof getAuth>, {
+  get(_target, prop) {
+    const auth = getAdminAuth();
+    const value = auth[prop as keyof typeof auth];
+    return typeof value === "function" ? value.bind(auth) : value;
+  },
+});

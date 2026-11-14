@@ -1,6 +1,6 @@
 import { Suspense } from "react";
 import { connection } from "next/server";
-import { adminDb } from "@/lib/firebase-admin";
+import { getAdminDb } from "@/lib/firebase-admin";
 
 async function HasilUjiFirestore() {
   await connection();
@@ -10,15 +10,32 @@ async function HasilUjiFirestore() {
   let waktuServer = "";
 
   try {
-    const docRef = adminDb.collection("_connection_test").doc("ping_vercel");
+    const db = getAdminDb();
+    const docRef = db.collection("_connection_test").doc("ping_vercel");
     const sekarang = new Date().toISOString();
 
-    await docRef.set({
-      status: "ok_vercel",
-      updatedAt: sekarang,
-    });
+    // Batasi waktu tunggu maksimal 8 detik agar tidak menggantung
+    const ujiFirestore = async () => {
+      await docRef.set({
+        status: "ok_vercel",
+        updatedAt: sekarang,
+      });
+      return await docRef.get();
+    };
 
-    const snapshot = await docRef.get();
+    const timeout = new Promise<never>((_, reject) =>
+      setTimeout(
+        () =>
+          reject(
+            new Error(
+              "Waktu habis (8 detik) saat menghubungi Firestore. Periksa apakah FIREBASE_PRIVATE_KEY di Vercel sudah benar."
+            )
+          ),
+        8000
+      )
+    );
+
+    const snapshot = await Promise.race([ujiFirestore(), timeout]);
     const data = snapshot.data();
 
     if (snapshot.exists && data?.status === "ok_vercel") {
@@ -32,7 +49,7 @@ async function HasilUjiFirestore() {
     pesan =
       error instanceof Error
         ? error.message
-        : "Terjadi kesalahan saat menghubungi Firestore dari Vercel.";
+        : "Terjadi kesalahan tidak dikenal saat menghubungi Firestore.";
   }
 
   if (berhasil) {
@@ -62,7 +79,13 @@ export default function UjiKoneksiPage() {
         <h1 className="text-xl font-bold text-slate-900">
           Uji Koneksi Vercel ke Firestore
         </h1>
-        <Suspense fallback={<p className="mt-4 text-sm text-slate-500">Menguji koneksi ke Firestore...</p>}>
+        <Suspense
+          fallback={
+            <p className="mt-4 text-sm text-slate-500">
+              Menguji koneksi ke Firestore...
+            </p>
+          }
+        >
           <HasilUjiFirestore />
         </Suspense>
       </div>
