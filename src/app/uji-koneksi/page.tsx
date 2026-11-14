@@ -1,6 +1,10 @@
+import { connection } from "next/server";
 import { adminDb } from "@/lib/firebase-admin";
 
 export default async function UjiKoneksiPage() {
+  // Beri tahu Next.js 16 bahwa halaman ini harus dijalankan secara dinamis saat dibuka
+  await connection();
+
   let berhasil = false;
   let pesan = "";
   let waktuServer = "";
