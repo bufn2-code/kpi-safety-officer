@@ -1,4 +1,5 @@
 import { Suspense } from "react";
+import Link from "next/link";
 import { redirect } from "next/navigation";
 import { getCurrentUser } from "@/lib/session";
 import LogoutButton from "./logout-button";
@@ -16,8 +17,10 @@ async function KontenDashboard() {
         ? "Admin"
         : "Safety Officer";
 
+  const isAdminOrAbove = user.role === "super_admin" || user.role === "admin";
+
   return (
-    <div className="mx-auto max-w-4xl space-y-6">
+    <div className="mx-auto max-w-5xl space-y-6">
       <header className="flex flex-wrap items-center justify-between gap-4 rounded-xl border border-[#495057] bg-[#2B3035] p-5">
         <div>
           <p className="text-xs font-medium uppercase tracking-wider text-[#8BB3D6]">
@@ -33,15 +36,27 @@ async function KontenDashboard() {
             </span>
           </p>
         </div>
-        <LogoutButton />
+        <div className="flex items-center gap-2.5">
+          {isAdminOrAbove && (
+            <Link
+              href="/admin/users"
+              className="rounded-lg bg-[#5B7C99] px-4 py-2 text-sm font-semibold text-white transition hover:bg-[#45657F]"
+            >
+              Kelola Pengguna
+            </Link>
+          )}
+          <LogoutButton />
+        </div>
       </header>
 
       <section className="rounded-xl border border-[#495057] bg-[#2B3035] p-6">
         <h2 className="text-base font-semibold text-[#F1F3F5]">
-          Status Otentikasi & Sesi Aktif
+          Status Otentikasi & Manajemen Pengguna
         </h2>
         <p className="mt-2 text-sm text-slate-300">
-          Sesi login berhasil diverifikasi. Pada tahap berikutnya, halaman ini akan menampilkan ringkasan skor KPI bulanan, target, dan menu kelola pengguna.
+          {isAdminOrAbove
+            ? "Gunakan tombol Kelola Pengguna di atas untuk menambahkan akun Safety Officer atau Admin baru, mengatur unit, serta mereset password anggota tim."
+            : "Sesi login Anda aktif. Pada tahap berikutnya, halaman ini akan menampilkan Kartu KPI bulanan dan input realisasi target Anda."}
         </p>
       </section>
     </div>
@@ -53,7 +68,7 @@ export default function DashboardPage() {
     <main className="min-h-screen bg-[#212529] p-4 sm:p-8 text-[#F1F3F5]">
       <Suspense
         fallback={
-          <div className="mx-auto max-w-4xl rounded-xl border border-[#495057] bg-[#2B3035] p-6 text-sm text-slate-400">
+          <div className="mx-auto max-w-5xl rounded-xl border border-[#495057] bg-[#2B3035] p-6 text-sm text-slate-400">
             Memuat sesi pengguna...
           </div>
         }

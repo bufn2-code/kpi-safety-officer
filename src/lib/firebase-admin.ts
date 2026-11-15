@@ -90,7 +90,10 @@ export async function firestoreSetDoc(
 ) {
   const { projectId } = getFirebaseEnv();
   const token = await getGoogleAccessToken();
-  const url = `https://firestore.googleapis.com/v1/projects/${projectId}/databases/(default)/documents/${collection}/${docId}`;
+  const fieldPaths = Object.keys(fields)
+    .map((k) => `updateMask.fieldPaths=${encodeURIComponent(k)}`)
+    .join("&");
+  const url = `https://firestore.googleapis.com/v1/projects/${projectId}/databases/(default)/documents/${collection}/${docId}?${fieldPaths}`;
 
   const res = await fetch(url, {
     method: "PATCH",
@@ -135,13 +138,39 @@ export async function firestoreGetDoc(collection: string, docId: string) {
   return res.json();
 }
 
-// Konversi ID Karyawan (misal: "IWIP-001") menjadi format email internal Firebase Auth
+export async function firestoreListCollection(collection: string) {
+  const { projectId } = getFirebaseEnv();
+  const token = await getGoogleAccessToken();
+  const url = `https://firestore.googleapis.com/v1/projects/${projectId}/databases/(default)/documents/${collection}?pageSize=200`;
+
+  const res = await fetch(url, {
+    method: "GET",
+    headers: {
+      Authorization: `Bearer ${token}`,
+    },
+    cache: "no-store",
+  });
+
+  if (res.status === 404) {
+    return [];
+  }
+
+  if (!res.ok) {
+    const errText = await res.text();
+    throw new Error(`Firestore gagal membaca koleksi (${res.status}): ${errText}`);
+  }
+
+  const data = await res.json();
+  return Array.isArray(data.documents) ? data.documents : [];
+}
+
+// Konversi ID Karyawan menjadi format email internal Firebase Auth
 export function employeeIdToEmail(employeeId: string): string {
   const cleanId = employeeId.trim().toLowerCase().replace(/[^a-z0-9._-]/g, "");
   return `${cleanId}@kpi-bufn.local`;
 }
 
-// Membuat akun baru di Firebase Authentication (dari sisi server)
+// Membuat akun baru di Firebase Authentication
 export async function createFirebaseAuthUser(
   employeeId: string,
   password: string,
@@ -169,11 +198,46 @@ export async function createFirebaseAuthUser(
 
   const data = await res.json();
   if (!res.ok) {
-    const msg = data?.error?.message || "Gagal membuat akun di Firebase Auth.";
-    throw new Error(msg);
+    const rawMsg = data?.error?.message || "";
+    if (rawMsg.includes("EMAIL_EXISTS")) {
+      throw new Error("ID Karyawan tersebut sudah terdaftar.");
+    }
+    throw new Error(rawMsg || "Gagal membuat akun di Firebase Auth.");
   }
 
   return { localId: data.localId, email };
+}
+
+// Mengubah password atau status aktif akun di Firebase Authentication (oleh Admin)
+export async function updateFirebaseAuthAccount(
+  localId: string,
+  updates: { password?: string; disabled?: boolean; displayName?: string }
+) {
+  const { projectId } = getFirebaseEnv();
+  const token = await getGoogleAccessToken();
+
+  const url = `https://identitytoolkit.googleapis.com/v1/projects/${projectId}/accounts:update`;
+  const res = await fetch(url, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${token}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      localId,
+      ...updates,
+    }),
+    cache: "no-store",
+  });
+
+  const data = await res.json();
+  if (!res.ok) {
+    throw new Error(
+      data?.error?.message || "Gagal memperbarui akun di Firebase Auth."
+    );
+  }
+
+  return data;
 }
 
 // Verifikasi ID Karyawan dan Password saat pengguna login
