@@ -1,8 +1,7 @@
 import { NextResponse } from "next/server";
+import { clearSessionCookie } from "@/lib/session";
 
 export async function POST() {
-  return NextResponse.json(
-    { message: "Endpoint logout belum aktif (Tahap 3)." },
-    { status: 501 }
-  );
+  await clearSessionCookie();
+  return NextResponse.json({ berhasil: true, pesan: "Berhasil keluar." });
 }

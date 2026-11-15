@@ -13,18 +13,19 @@ function base64UrlEncode(input: string | Buffer): string {
 export function getFirebaseEnv() {
   const projectId = process.env.FIREBASE_PROJECT_ID?.trim();
   const clientEmail = process.env.FIREBASE_CLIENT_EMAIL?.trim();
+  const webApiKey = process.env.FIREBASE_WEB_API_KEY?.trim();
   const rawKey = process.env.FIREBASE_PRIVATE_KEY?.trim();
   const privateKey = rawKey
     ?.replace(/^["']|["']$/g, "")
     .replace(/\\n/g, "\n");
 
-  if (!projectId || !clientEmail || !privateKey) {
+  if (!projectId || !clientEmail || !privateKey || !webApiKey) {
     throw new Error(
-      `Variabel lingkungan belum lengkap: PROJECT_ID=${Boolean(projectId)}, CLIENT_EMAIL=${Boolean(clientEmail)}, PRIVATE_KEY=${Boolean(privateKey)}`
+      `Variabel lingkungan Firebase belum lengkap: PROJECT_ID=${Boolean(projectId)}, CLIENT_EMAIL=${Boolean(clientEmail)}, PRIVATE_KEY=${Boolean(privateKey)}, WEB_API_KEY=${Boolean(webApiKey)}`
     );
   }
 
-  return { projectId, clientEmail, privateKey };
+  return { projectId, clientEmail, privateKey, webApiKey };
 }
 
 export async function getGoogleAccessToken(): Promise<string> {
@@ -77,10 +78,15 @@ export async function getGoogleAccessToken(): Promise<string> {
   return data.access_token;
 }
 
+export type FirestoreValue =
+  | { stringValue: string }
+  | { integerValue: string }
+  | { booleanValue: boolean };
+
 export async function firestoreSetDoc(
   collection: string,
   docId: string,
-  fields: Record<string, { stringValue: string }>
+  fields: Record<string, FirestoreValue>
 ) {
   const { projectId } = getFirebaseEnv();
   const token = await getGoogleAccessToken();
@@ -117,10 +123,83 @@ export async function firestoreGetDoc(collection: string, docId: string) {
     cache: "no-store",
   });
 
+  if (res.status === 404) {
+    return null;
+  }
+
   if (!res.ok) {
     const errText = await res.text();
     throw new Error(`Firestore gagal membaca (${res.status}): ${errText}`);
   }
 
   return res.json();
+}
+
+// Konversi ID Karyawan (misal: "IWIP-001") menjadi format email internal Firebase Auth
+export function employeeIdToEmail(employeeId: string): string {
+  const cleanId = employeeId.trim().toLowerCase().replace(/[^a-z0-9._-]/g, "");
+  return `${cleanId}@kpi-bufn.local`;
+}
+
+// Membuat akun baru di Firebase Authentication (dari sisi server)
+export async function createFirebaseAuthUser(
+  employeeId: string,
+  password: string,
+  displayName: string
+): Promise<{ localId: string; email: string }> {
+  const { projectId } = getFirebaseEnv();
+  const token = await getGoogleAccessToken();
+  const email = employeeIdToEmail(employeeId);
+
+  const url = `https://identitytoolkit.googleapis.com/v1/projects/${projectId}/accounts`;
+  const res = await fetch(url, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${token}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      email,
+      password,
+      displayName,
+      emailVerified: true,
+    }),
+    cache: "no-store",
+  });
+
+  const data = await res.json();
+  if (!res.ok) {
+    const msg = data?.error?.message || "Gagal membuat akun di Firebase Auth.";
+    throw new Error(msg);
+  }
+
+  return { localId: data.localId, email };
+}
+
+// Verifikasi ID Karyawan dan Password saat pengguna login
+export async function verifyEmployeePassword(
+  employeeId: string,
+  password: string
+): Promise<{ localId: string; email: string }> {
+  const { webApiKey } = getFirebaseEnv();
+  const email = employeeIdToEmail(employeeId);
+
+  const url = `https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword?key=${webApiKey}`;
+  const res = await fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      email,
+      password,
+      returnSecureToken: true,
+    }),
+    cache: "no-store",
+  });
+
+  const data = await res.json();
+  if (!res.ok) {
+    throw new Error("ID Karyawan atau Password salah.");
+  }
+
+  return { localId: data.localId, email };
 }
