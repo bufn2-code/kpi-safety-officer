@@ -7,6 +7,8 @@ export interface SessionUser {
   employeeId: string;
   name: string;
   role: UserRole;
+  bufn: string;
+  smelter: string;
   unit: string;
   exp: number;
 }
@@ -92,7 +94,12 @@ export async function verifySessionToken(
       return null;
     }
 
-    return user;
+    return {
+      ...user,
+      bufn: user.bufn || "ALL",
+      smelter: user.smelter || "-",
+      unit: user.unit || "Comprehensive HSE",
+    };
   } catch {
     return null;
   }

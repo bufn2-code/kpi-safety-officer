@@ -5,18 +5,28 @@ import {
   firestoreSetDoc,
 } from "@/lib/firebase-admin";
 import { getCurrentUser } from "@/lib/session";
+import type { FormulaType } from "@/lib/kpi-engine";
 
 export interface KpiParameter {
   id: string;
   code: string;
   name: string;
   description: string;
+  formulaType: FormulaType;
   unit: string;
   target: number;
   weight: number;
   isActive: boolean;
   order: number;
 }
+
+const VALID_FORMULAS = new Set<FormulaType>([
+  "higher_better",
+  "lower_better",
+  "yes_no",
+  "direct_percentage",
+  "bonus_point",
+]);
 
 export function parseKpiParameterDoc(doc: {
   name?: string;
@@ -34,20 +44,24 @@ export function parseKpiParameterDoc(doc: {
   const fallbackId = doc.name?.split("/").pop() || "";
   const rawTarget =
     f.target?.doubleValue ??
-    (f.target?.integerValue ? Number(f.target.integerValue) : 0);
+    (f.target?.integerValue !== undefined ? Number(f.target.integerValue) : 0);
   const rawWeight =
     f.weight?.doubleValue ??
-    (f.weight?.integerValue ? Number(f.weight.integerValue) : 0);
+    (f.weight?.integerValue !== undefined ? Number(f.weight.integerValue) : 0);
   const rawOrder =
     f.order?.integerValue !== undefined
       ? Number(f.order.integerValue)
       : f.order?.doubleValue ?? 0;
+
+  const rawFormula = (f.formulaType?.stringValue ||
+    "higher_better") as FormulaType;
 
   return {
     id: f.id?.stringValue || fallbackId,
     code: f.code?.stringValue || "",
     name: f.name?.stringValue || "",
     description: f.description?.stringValue || "",
+    formulaType: VALID_FORMULAS.has(rawFormula) ? rawFormula : "higher_better",
     unit: f.unit?.stringValue || "Kegiatan",
     target: Number(rawTarget) || 0,
     weight: Number(rawWeight) || 0,
@@ -69,14 +83,20 @@ export async function GET() {
     const docs = await firestoreListCollection("kpi_parameters");
     const parameters = docs
       .map(parseKpiParameterDoc)
-      .sort((a: KpiParameter, b: KpiParameter) => a.order - b.order || a.code.localeCompare(b.code));
+      .sort(
+        (a: KpiParameter, b: KpiParameter) =>
+          a.order - b.order || a.code.localeCompare(b.code)
+      );
 
     return NextResponse.json({ berhasil: true, parameters });
   } catch (error) {
     return NextResponse.json(
       {
         berhasil: false,
-        pesan: error instanceof Error ? error.message : "Gagal memuat parameter KPI.",
+        pesan:
+          error instanceof Error
+            ? error.message
+            : "Gagal memuat parameter KPI.",
       },
       { status: 500 }
     );
@@ -85,9 +105,12 @@ export async function GET() {
 
 export async function POST(request: Request) {
   const user = await getCurrentUser();
-  if (!user || (user.role !== "super_admin" && user.role !== "admin")) {
+  if (!user || user.role !== "super_admin") {
     return NextResponse.json(
-      { berhasil: false, pesan: "Hanya Admin / Super Admin yang dapat menambah parameter KPI." },
+      {
+        berhasil: false,
+        pesan: "Hanya Super Admin yang dapat menambah Master Parameter KPI.",
+      },
       { status: 403 }
     );
   }
@@ -97,36 +120,52 @@ export async function POST(request: Request) {
     const code = String(body.code || "").trim().toUpperCase();
     const name = String(body.name || "").trim();
     const description = String(body.description || "").trim();
+    const rawFormula = String(
+      body.formulaType || "higher_better"
+    ) as FormulaType;
+    const formulaType: FormulaType = VALID_FORMULAS.has(rawFormula)
+      ? rawFormula
+      : "higher_better";
     const unit = String(body.unit || "Kegiatan").trim();
     const target = Number(body.target);
     const weight = Number(body.weight);
     const order = Number(body.order) || 1;
 
-    if (!code || !name || Number.isNaN(target) || target <= 0 || Number.isNaN(weight) || weight <= 0) {
+    if (
+      !code ||
+      !name ||
+      Number.isNaN(target) ||
+      target < 0 ||
+      Number.isNaN(weight) ||
+      weight <= 0
+    ) {
       return NextResponse.json(
         {
           berhasil: false,
-          pesan: "Kode, Nama Parameter, Target (> 0), dan Bobot (> 0) wajib diisi dengan benar.",
+          pesan:
+            "Kode, Nama Parameter, Target/Poin (>= 0), dan Bobot/Maksimal Poin (> 0) wajib diisi dengan benar.",
         },
         { status: 400 }
       );
     }
 
-    // Cek total bobot parameter aktif agar tidak melebihi 100%
-    const docs = await firestoreListCollection("kpi_parameters");
-    const existing = docs.map(parseKpiParameterDoc);
-    const activeWeight = existing
-      .filter((p: KpiParameter) => p.isActive)
-      .reduce((acc: number, p: KpiParameter) => acc + p.weight, 0);
+    // Batas 100% hanya berlaku untuk parameter utama (bukan bonus_point)
+    if (formulaType !== "bonus_point") {
+      const docs = await firestoreListCollection("kpi_parameters");
+      const existing = docs.map(parseKpiParameterDoc);
+      const activeCoreWeight = existing
+        .filter((p: KpiParameter) => p.isActive && p.formulaType !== "bonus_point")
+        .reduce((acc: number, p: KpiParameter) => acc + p.weight, 0);
 
-    if (Math.round((activeWeight + weight) * 100) / 100 > 100) {
-      return NextResponse.json(
-        {
-          berhasil: false,
-          pesan: `Total bobot aktif saat ini ${activeWeight}%. Penambahan ${weight}% akan melebihi batas 100%.`,
-        },
-        { status: 400 }
-      );
+      if (Math.round((activeCoreWeight + weight) * 100) / 100 > 100) {
+        return NextResponse.json(
+          {
+            berhasil: false,
+            pesan: `Total bobot parameter utama saat ini ${activeCoreWeight}%. Penambahan ${weight}% akan melebihi batas 100%. (Gunakan tipe "Poin Bonus" jika ingin menambah nilai ekstra di luar 100%).`,
+          },
+          { status: 400 }
+        );
+      }
     }
 
     const id = `kpi_${crypto.randomUUID().slice(0, 8)}`;
@@ -135,6 +174,7 @@ export async function POST(request: Request) {
       code: { stringValue: code },
       name: { stringValue: name },
       description: { stringValue: description },
+      formulaType: { stringValue: formulaType },
       unit: { stringValue: unit },
       target: { doubleValue: target },
       weight: { doubleValue: weight },
@@ -150,7 +190,10 @@ export async function POST(request: Request) {
     return NextResponse.json(
       {
         berhasil: false,
-        pesan: error instanceof Error ? error.message : "Gagal menyimpan parameter KPI.",
+        pesan:
+          error instanceof Error
+            ? error.message
+            : "Gagal menyimpan parameter KPI.",
       },
       { status: 500 }
     );

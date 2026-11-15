@@ -15,10 +15,8 @@ export async function POST(request: Request) {
       );
     }
 
-    // 1. Verifikasi ID Karyawan & Password ke Firebase Auth
     const authUser = await verifyEmployeePassword(employeeId, password);
 
-    // 2. Ambil data profil & role dari Firestore
     const userDoc = await firestoreGetDoc("users", authUser.localId);
     if (!userDoc || !userDoc.fields) {
       return NextResponse.json(
@@ -38,21 +36,27 @@ export async function POST(request: Request) {
 
     const name = fields.name?.stringValue || employeeId;
     const role = (fields.role?.stringValue || "safety_officer") as UserRole;
-    const unit = fields.unit?.stringValue || "-";
+    const bufn =
+      fields.bufn?.stringValue || (role === "super_admin" ? "ALL" : "BUFN 1");
+    const smelter = fields.smelter?.stringValue || "-";
+    const unit =
+      fields.unit?.stringValue ||
+      (bufn === "ALL" ? "Comprehensive HSE" : `${bufn} - ${smelter}`);
 
-    // 3. Simpan tiket sesi login ke cookie browser
     await setSessionCookie({
       uid: authUser.localId,
       employeeId,
       name,
       role,
+      bufn,
+      smelter,
       unit,
     });
 
     return NextResponse.json({
       berhasil: true,
       pesan: "Login berhasil!",
-      user: { employeeId, name, role, unit },
+      user: { employeeId, name, role, bufn, smelter, unit },
     });
   } catch (error) {
     return NextResponse.json(

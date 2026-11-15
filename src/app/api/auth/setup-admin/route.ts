@@ -5,10 +5,10 @@ import {
   firestoreSetDoc,
 } from "@/lib/firebase-admin";
 import { setSessionCookie } from "@/lib/session";
+import { DEFAULT_WORK_AREAS, saveWorkAreas } from "@/lib/work-areas";
 
 export async function POST(request: Request) {
   try {
-    // Cek apakah Super Admin pertama sudah pernah dibuat
     const initDoc = await firestoreGetDoc("system_config", "init");
     if (initDoc?.fields?.initialized?.booleanValue === true) {
       return NextResponse.json(
@@ -36,34 +36,36 @@ export async function POST(request: Request) {
       );
     }
 
-    // 1. Buat akun di Firebase Authentication
     const authUser = await createFirebaseAuthUser(employeeId, password, name);
     const now = new Date().toISOString();
 
-    // 2. Simpan profil lengkap beserta role 'super_admin' di Firestore
     await firestoreSetDoc("users", authUser.localId, {
       uid: { stringValue: authUser.localId },
       employeeId: { stringValue: employeeId },
       name: { stringValue: name },
       role: { stringValue: "super_admin" },
+      bufn: { stringValue: "ALL" },
+      smelter: { stringValue: "Semua Area" },
       unit: { stringValue: unit },
       isActive: { booleanValue: true },
       createdAt: { stringValue: now },
     });
 
-    // 3. Tandai sistem sudah diinisialisasi agar halaman setup terkunci
+    await saveWorkAreas(DEFAULT_WORK_AREAS);
+
     await firestoreSetDoc("system_config", "init", {
       initialized: { booleanValue: true },
       superAdminUid: { stringValue: authUser.localId },
       initializedAt: { stringValue: now },
     });
 
-    // 4. Langsung pasang cookie sesi login
     await setSessionCookie({
       uid: authUser.localId,
       employeeId,
       name,
       role: "super_admin",
+      bufn: "ALL",
+      smelter: "Semua Area",
       unit,
     });
 

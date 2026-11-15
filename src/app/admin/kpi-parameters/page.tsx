@@ -4,7 +4,11 @@ import { redirect } from "next/navigation";
 import { connection } from "next/server";
 import { firestoreListCollection } from "@/lib/firebase-admin";
 import { getCurrentUser } from "@/lib/session";
-import { parseKpiParameterDoc, type KpiParameter } from "@/app/api/admin/kpi-parameters/route";
+import { getKpiGrades, getScoringPolicy } from "@/lib/kpi-engine";
+import {
+  parseKpiParameterDoc,
+  type KpiParameter,
+} from "@/app/api/admin/kpi-parameters/route";
 import ParametersManager from "./parameters-manager";
 
 async function KontenParameterKpi() {
@@ -14,16 +18,30 @@ async function KontenParameterKpi() {
   if (!user) {
     redirect("/login");
   }
-  if (user.role !== "super_admin" && user.role !== "admin") {
+  if (user.role !== "super_admin") {
     redirect("/dashboard");
   }
 
-  const docs = await firestoreListCollection("kpi_parameters");
+  const [docs, grades, policy] = await Promise.all([
+    firestoreListCollection("kpi_parameters"),
+    getKpiGrades(),
+    getScoringPolicy(),
+  ]);
+
   const parameters = docs
     .map(parseKpiParameterDoc)
-    .sort((a: KpiParameter, b: KpiParameter) => a.order - b.order || a.code.localeCompare(b.code));
+    .sort(
+      (a: KpiParameter, b: KpiParameter) =>
+        a.order - b.order || a.code.localeCompare(b.code)
+    );
 
-  return <ParametersManager initialParameters={parameters} />;
+  return (
+    <ParametersManager
+      initialParameters={parameters}
+      initialGrades={grades}
+      initialPolicy={policy}
+    />
+  );
 }
 
 export default function KpiParametersPage() {
@@ -38,17 +56,17 @@ export default function KpiParametersPage() {
             ← Kembali ke Dashboard
           </Link>
           <h1 className="mt-1 text-2xl font-bold text-[#F1F3F5]">
-            Master Parameter KPI Safety Officer
+            Master Parameter, Rumus, Poin Bonus & Kebijakan Nilai
           </h1>
           <p className="mt-0.5 text-sm text-slate-300">
-            Atur daftar indikator kinerja bulanan, target, satuan ukur, dan bobot penilaian (total bobot aktif = 100%).
+            Atur indikator utama (100%), indikator penambah poin (bonus), kategori nilai (A/B/C/D), serta aturan kelulusan indikator wajib.
           </p>
         </div>
 
         <Suspense
           fallback={
             <div className="rounded-xl border border-[#495057] bg-[#2B3035] p-6 text-sm text-slate-400">
-              Memuat master parameter KPI...
+              Memuat konfigurasi parameter dan kebijakan KPI...
             </div>
           }
         >

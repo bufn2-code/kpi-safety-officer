@@ -9,6 +9,15 @@ import {
   parseKpiParameterDoc,
   type KpiParameter,
 } from "@/app/api/admin/kpi-parameters/route";
+import {
+  calculateDynamicScore,
+  evaluateKpiResult,
+  getKpiGrades,
+  getScoringPolicy,
+  type FormulaType,
+  type GradeThreshold,
+  type ScoringPolicy,
+} from "@/lib/kpi-engine";
 
 export type KpiCardStatus = "draft" | "published";
 
@@ -16,6 +25,7 @@ export interface KpiEntryItem {
   parameterId: string;
   code: string;
   name: string;
+  formulaType: FormulaType;
   unit: string;
   target: number;
   weight: number;
@@ -29,25 +39,24 @@ export interface KpiCardRecord {
   uid: string;
   employeeId: string;
   userName: string;
+  bufn: string;
+  smelter: string;
   userUnit: string;
-  period: string; // Format: "YYYY-MM"
+  period: string;
   status: KpiCardStatus;
+  coreScore: number;
+  bonusScore: number;
   totalScore: number;
+  grade: GradeThreshold;
+  gateTriggered: boolean;
+  failedCoreCodes: string[];
+  gradesScale: GradeThreshold[];
+  policy: ScoringPolicy;
   adminFeedback: string;
   entries: KpiEntryItem[];
   updatedAt: string;
   assessedBy: string;
-}
-
-export function calculateEntryScore(
-  actual: number,
-  target: number,
-  weight: number
-): number {
-  if (target <= 0 || actual <= 0) return 0;
-  const raw = (actual / target) * weight;
-  const capped = Math.min(raw, weight);
-  return Math.round(capped * 100) / 100;
+  isHistoricalSnapshot: boolean;
 }
 
 function getDefaultPeriod(): string {
@@ -70,15 +79,58 @@ export async function GET(request: Request) {
     const { searchParams } = new URL(request.url);
     const period = (searchParams.get("period") || getDefaultPeriod()).trim();
     const requestedUid = (searchParams.get("uid") || currentUser.uid).trim();
+    const syncMaster = searchParams.get("syncMaster") === "1";
 
-    const isAdminOrAbove =
-      currentUser.role === "super_admin" || currentUser.role === "admin";
+    const isSuperAdmin = currentUser.role === "super_admin";
+    const isAdmin = currentUser.role === "admin";
+    const isAdminOrAbove = isSuperAdmin || isAdmin;
 
-    // Safety Officer hanya boleh melihat Kartu KPI miliknya sendiri
     const targetUid = isAdminOrAbove ? requestedUid : currentUser.uid;
 
-    // 1. Ambil Master Parameter KPI aktif
-    const paramDocs = await firestoreListCollection("kpi_parameters");
+    const userDoc = await firestoreGetDoc("users", targetUid);
+    if (!userDoc?.fields) {
+      return NextResponse.json(
+        { berhasil: false, pesan: "Profil personel tidak ditemukan." },
+        { status: 404 }
+      );
+    }
+
+    const uFields = userDoc.fields;
+    const ownerBufn = uFields.bufn?.stringValue || "BUFN 1";
+    const ownerSmelter = uFields.smelter?.stringValue || "-";
+
+    if (isAdmin && ownerBufn !== currentUser.bufn) {
+      return NextResponse.json(
+        {
+          berhasil: false,
+          pesan: `Akses ditolak. Anda hanya memiliki wewenang untuk anggota di ${currentUser.bufn}.`,
+        },
+        { status: 403 }
+      );
+    }
+
+    const ownerInfo = {
+      uid: targetUid,
+      employeeId: uFields.employeeId?.stringValue || currentUser.employeeId,
+      name: uFields.name?.stringValue || currentUser.name,
+      bufn: ownerBufn,
+      smelter: ownerSmelter,
+      unit:
+        uFields.unit?.stringValue ||
+        (ownerBufn === "ALL"
+          ? "Comprehensive HSE"
+          : `${ownerBufn} - ${ownerSmelter}`),
+    };
+
+    const docId = `${targetUid}_${period}`;
+    const cardDoc = await firestoreGetDoc("kpi_cards", docId);
+
+    const [paramDocs, currentGrades, currentPolicy] = await Promise.all([
+      firestoreListCollection("kpi_parameters"),
+      getKpiGrades(),
+      getScoringPolicy(),
+    ]);
+
     const activeParams = paramDocs
       .map(parseKpiParameterDoc)
       .filter((p: KpiParameter) => p.isActive)
@@ -87,25 +139,14 @@ export async function GET(request: Request) {
           a.order - b.order || a.code.localeCompare(b.code)
       );
 
-    // 2. Ambil profil pemilik kartu
-    const userDoc = await firestoreGetDoc("users", targetUid);
-    const uFields = userDoc?.fields || {};
-    const ownerInfo = {
-      uid: targetUid,
-      employeeId: uFields.employeeId?.stringValue || currentUser.employeeId,
-      name: uFields.name?.stringValue || currentUser.name,
-      unit: uFields.unit?.stringValue || currentUser.unit,
-    };
-
-    // 3. Ambil data Kartu KPI periode tersebut
-    const docId = `${targetUid}_${period}`;
-    const cardDoc = await firestoreGetDoc("kpi_cards", docId);
-
     let status: KpiCardStatus = "draft";
     let adminFeedback = "";
     let updatedAt = "";
     let assessedBy = "";
-    let savedMap: Record<string, { actual: number; notes: string }> = {};
+    let entries: KpiEntryItem[] = [];
+    let gradesScale: GradeThreshold[] = currentGrades;
+    let activePolicy: ScoringPolicy = currentPolicy;
+    let isHistoricalSnapshot = false;
 
     if (cardDoc?.fields) {
       const f = cardDoc.fields;
@@ -114,60 +155,146 @@ export async function GET(request: Request) {
       updatedAt = f.updatedAt?.stringValue || "";
       assessedBy = f.assessedBy?.stringValue || "";
 
-      if (f.entriesJson?.stringValue) {
+      if (f.gradesJson?.stringValue && !(syncMaster && isAdminOrAbove)) {
         try {
-          const parsed = JSON.parse(f.entriesJson.stringValue) as Array<{
-            parameterId: string;
-            actual: number;
-            notes: string;
-          }>;
-          for (const item of parsed) {
-            savedMap[item.parameterId] = {
-              actual: Number(item.actual) || 0,
-              notes: item.notes || "",
-            };
+          const parsedGrades = JSON.parse(
+            f.gradesJson.stringValue
+          ) as GradeThreshold[];
+          if (Array.isArray(parsedGrades) && parsedGrades.length > 0) {
+            gradesScale = parsedGrades;
           }
         } catch {
-          savedMap = {};
+          gradesScale = currentGrades;
+        }
+      }
+
+      if (f.policyJson?.stringValue && !(syncMaster && isAdminOrAbove)) {
+        try {
+          const parsedPolicy = JSON.parse(
+            f.policyJson.stringValue
+          ) as ScoringPolicy;
+          if (parsedPolicy && typeof parsedPolicy === "object") {
+            activePolicy = parsedPolicy;
+          }
+        } catch {
+          activePolicy = currentPolicy;
+        }
+      }
+
+      if (f.entriesJson?.stringValue) {
+        try {
+          const savedEntries = JSON.parse(
+            f.entriesJson.stringValue
+          ) as KpiEntryItem[];
+
+          if (
+            Array.isArray(savedEntries) &&
+            savedEntries.length > 0 &&
+            !(syncMaster && isAdminOrAbove)
+          ) {
+            isHistoricalSnapshot = true;
+            entries = savedEntries.map((item) => {
+              const fType = item.formulaType || "higher_better";
+              const score = calculateDynamicScore(
+                fType,
+                item.actual,
+                item.target,
+                item.weight
+              );
+              return {
+                parameterId: item.parameterId,
+                code: item.code,
+                name: item.name,
+                formulaType: fType,
+                unit: item.unit,
+                target: Number(item.target) || 0,
+                weight: Number(item.weight) || 0,
+                actual: Number(item.actual) || 0,
+                score,
+                notes: item.notes || "",
+              };
+            });
+          } else if (Array.isArray(savedEntries)) {
+            const savedMap: Record<string, { actual: number; notes: string }> =
+              {};
+            for (const item of savedEntries) {
+              savedMap[item.parameterId] = {
+                actual: Number(item.actual) || 0,
+                notes: item.notes || "",
+              };
+            }
+            entries = activeParams.map((p: KpiParameter) => {
+              const prev = savedMap[p.id] || { actual: 0, notes: "" };
+              return {
+                parameterId: p.id,
+                code: p.code,
+                name: p.name,
+                formulaType: p.formulaType || "higher_better",
+                unit: p.unit,
+                target: p.target,
+                weight: p.weight,
+                actual: prev.actual,
+                score: calculateDynamicScore(
+                  p.formulaType || "higher_better",
+                  prev.actual,
+                  p.target,
+                  p.weight
+                ),
+                notes: prev.notes,
+              };
+            });
+          }
+        } catch {
+          entries = [];
         }
       }
     }
 
-    const entries: KpiEntryItem[] = activeParams.map((p: KpiParameter) => {
-      const saved = savedMap[p.id];
-      const actual = saved ? saved.actual : 0;
-      const notes = saved ? saved.notes : "";
-      const score = calculateEntryScore(actual, p.target, p.weight);
-      return {
+    if (entries.length === 0) {
+      entries = activeParams.map((p: KpiParameter) => ({
         parameterId: p.id,
         code: p.code,
         name: p.name,
+        formulaType: p.formulaType || "higher_better",
         unit: p.unit,
         target: p.target,
         weight: p.weight,
-        actual,
-        score,
-        notes,
-      };
-    });
+        actual: 0,
+        score: calculateDynamicScore(
+          p.formulaType || "higher_better",
+          0,
+          p.target,
+          p.weight
+        ),
+        notes: "",
+      }));
+    }
 
-    const totalScore =
-      Math.round(entries.reduce((sum, item) => sum + item.score, 0) * 100) /
-      100;
+    const evaluation = evaluateKpiResult(entries, gradesScale, activePolicy);
 
     const card: KpiCardRecord = {
       id: docId,
       uid: ownerInfo.uid,
       employeeId: ownerInfo.employeeId,
       userName: ownerInfo.name,
+      bufn: ownerInfo.bufn,
+      smelter: ownerInfo.smelter,
       userUnit: ownerInfo.unit,
       period,
       status,
-      totalScore,
+      coreScore: evaluation.coreScore,
+      bonusScore: evaluation.bonusScore,
+      totalScore: evaluation.totalScore,
+      grade: evaluation.grade,
+      gateTriggered: evaluation.gateTriggered,
+      failedCoreCodes: evaluation.failedCoreCodes,
+      gradesScale,
+      policy: activePolicy,
       adminFeedback,
       entries,
       updatedAt,
       assessedBy,
+      isHistoricalSnapshot,
     };
 
     return NextResponse.json({ berhasil: true, card });
@@ -192,14 +319,14 @@ export async function POST(request: Request) {
     );
   }
 
-  // Hanya Admin dan Super Admin yang berhak mengisi / merevisi penilaian KPI
-  const isAdminOrAbove =
-    currentUser.role === "super_admin" || currentUser.role === "admin";
-  if (!isAdminOrAbove) {
+  const isSuperAdmin = currentUser.role === "super_admin";
+  const isAdmin = currentUser.role === "admin";
+  if (!isSuperAdmin && !isAdmin) {
     return NextResponse.json(
       {
         berhasil: false,
-        pesan: "Hanya Admin atau Super Admin yang dapat mengisi atau merevisi penilaian KPI.",
+        pesan:
+          "Hanya Admin BUFN atau Super Admin yang dapat mengisi atau merevisi penilaian KPI.",
       },
       { status: 403 }
     );
@@ -215,49 +342,13 @@ export async function POST(request: Request) {
 
     if (!targetUid || !/^\d{4}-\d{2}$/.test(period)) {
       return NextResponse.json(
-        { berhasil: false, pesan: "Personel Safety Officer dan periode bulan wajib dipilih." },
+        {
+          berhasil: false,
+          pesan: "Personel Safety Officer dan periode bulan wajib dipilih.",
+        },
         { status: 400 }
       );
     }
-
-    const paramDocs = await firestoreListCollection("kpi_parameters");
-    const activeParams = paramDocs
-      .map(parseKpiParameterDoc)
-      .filter((p: KpiParameter) => p.isActive)
-      .sort(
-        (a: KpiParameter, b: KpiParameter) =>
-          a.order - b.order || a.code.localeCompare(b.code)
-      );
-
-    const inputMap: Record<string, { actual: number; notes: string }> = {};
-    for (const item of rawEntries) {
-      if (item && typeof item.parameterId === "string") {
-        inputMap[item.parameterId] = {
-          actual: Math.max(0, Number(item.actual) || 0),
-          notes: String(item.notes || "").trim(),
-        };
-      }
-    }
-
-    const entries: KpiEntryItem[] = activeParams.map((p: KpiParameter) => {
-      const inp = inputMap[p.id] || { actual: 0, notes: "" };
-      const score = calculateEntryScore(inp.actual, p.target, p.weight);
-      return {
-        parameterId: p.id,
-        code: p.code,
-        name: p.name,
-        unit: p.unit,
-        target: p.target,
-        weight: p.weight,
-        actual: inp.actual,
-        score,
-        notes: inp.notes,
-      };
-    });
-
-    const totalScore =
-      Math.round(entries.reduce((sum, item) => sum + item.score, 0) * 100) /
-      100;
 
     const userDoc = await firestoreGetDoc("users", targetUid);
     if (!userDoc?.fields) {
@@ -270,7 +361,60 @@ export async function POST(request: Request) {
     const uFields = userDoc.fields;
     const employeeId = uFields.employeeId?.stringValue || "";
     const userName = uFields.name?.stringValue || "";
-    const userUnit = uFields.unit?.stringValue || "-";
+    const ownerBufn = uFields.bufn?.stringValue || "BUFN 1";
+    const ownerSmelter = uFields.smelter?.stringValue || "-";
+    const userUnit =
+      uFields.unit?.stringValue || `${ownerBufn} - ${ownerSmelter}`;
+
+    if (isAdmin && ownerBufn !== currentUser.bufn) {
+      return NextResponse.json(
+        {
+          berhasil: false,
+          pesan: `Anda hanya dapat menilai anggota di wilayah ${currentUser.bufn}.`,
+        },
+        { status: 403 }
+      );
+    }
+
+    const [currentGrades, currentPolicy] = await Promise.all([
+      getKpiGrades(),
+      getScoringPolicy(),
+    ]);
+
+    const entries: KpiEntryItem[] = rawEntries.map(
+      (item: {
+        parameterId?: string;
+        code?: string;
+        name?: string;
+        formulaType?: FormulaType;
+        unit?: string;
+        target?: number;
+        weight?: number;
+        actual?: number;
+        notes?: string;
+      }) => {
+        const fType = (item.formulaType || "higher_better") as FormulaType;
+        const target = Math.max(0, Number(item.target) || 0);
+        const weight = Math.max(0, Number(item.weight) || 0);
+        const actual = Math.max(0, Number(item.actual) || 0);
+        const score = calculateDynamicScore(fType, actual, target, weight);
+
+        return {
+          parameterId: String(item.parameterId || ""),
+          code: String(item.code || ""),
+          name: String(item.name || ""),
+          formulaType: fType,
+          unit: String(item.unit || "Kegiatan"),
+          target,
+          weight,
+          actual,
+          score,
+          notes: String(item.notes || "").trim(),
+        };
+      }
+    );
+
+    const evaluation = evaluateKpiResult(entries, currentGrades, currentPolicy);
 
     const docId = `${targetUid}_${period}`;
     const now = new Date().toISOString();
@@ -281,12 +425,18 @@ export async function POST(request: Request) {
       uid: { stringValue: targetUid },
       employeeId: { stringValue: employeeId },
       userName: { stringValue: userName },
+      bufn: { stringValue: ownerBufn },
+      smelter: { stringValue: ownerSmelter },
       userUnit: { stringValue: userUnit },
       period: { stringValue: period },
       status: { stringValue: statusInput },
-      totalScore: { doubleValue: totalScore },
+      coreScore: { doubleValue: evaluation.coreScore },
+      bonusScore: { doubleValue: evaluation.bonusScore },
+      totalScore: { doubleValue: evaluation.totalScore },
       adminFeedback: { stringValue: adminFeedback },
       entriesJson: { stringValue: JSON.stringify(entries) },
+      gradesJson: { stringValue: JSON.stringify(currentGrades) },
+      policyJson: { stringValue: JSON.stringify(currentPolicy) },
       updatedAt: { stringValue: now },
       assessedBy: { stringValue: assessedBy },
     });
@@ -295,7 +445,7 @@ export async function POST(request: Request) {
       berhasil: true,
       pesan:
         statusInput === "published"
-          ? `Penilaian KPI ${userName} (${period}) berhasil disimpan & dipublikasikan.`
+          ? `Penilaian KPI ${userName} (${ownerBufn} - ${ownerSmelter}) periode ${period} berhasil disimpan & dipublikasikan.`
           : `Draft penilaian KPI ${userName} (${period}) berhasil disimpan.`,
     });
   } catch (error) {

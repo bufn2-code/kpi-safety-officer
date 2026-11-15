@@ -4,12 +4,15 @@ import { redirect } from "next/navigation";
 import { connection } from "next/server";
 import { firestoreListCollection } from "@/lib/firebase-admin";
 import { getCurrentUser, type UserRole } from "@/lib/session";
+import { getWorkAreas } from "@/lib/work-areas";
 import KpiCardView from "./kpi-card-view";
 
 export interface OfficerOption {
   uid: string;
   employeeId: string;
   name: string;
+  bufn: string;
+  smelter: string;
   unit: string;
   role: UserRole;
 }
@@ -22,14 +25,19 @@ async function KontenKartuKpi() {
     redirect("/login");
   }
 
-  const isAdminOrAbove =
-    currentUser.role === "super_admin" || currentUser.role === "admin";
+  const isSuperAdmin = currentUser.role === "super_admin";
+  const isAdmin = currentUser.role === "admin";
+  const isAdminOrAbove = isSuperAdmin || isAdmin;
+
+  const workAreas = await getWorkAreas();
 
   let officerList: OfficerOption[] = [
     {
       uid: currentUser.uid,
       employeeId: currentUser.employeeId,
       name: currentUser.name,
+      bufn: currentUser.bufn,
+      smelter: currentUser.smelter,
       unit: currentUser.unit,
       role: currentUser.role,
     },
@@ -40,25 +48,49 @@ async function KontenKartuKpi() {
     officerList = userDocs
       .map(
         (doc: {
-          fields?: Record<string, { stringValue?: string; booleanValue?: boolean }>;
+          fields?: Record<
+            string,
+            { stringValue?: string; booleanValue?: boolean }
+          >;
         }) => {
           const f = doc.fields || {};
+          const role = (f.role?.stringValue || "safety_officer") as UserRole;
+          const bufn =
+            f.bufn?.stringValue || (role === "super_admin" ? "ALL" : "BUFN 1");
+          const smelter = f.smelter?.stringValue || "-";
           return {
             uid: f.uid?.stringValue || "",
             employeeId: f.employeeId?.stringValue || "",
             name: f.name?.stringValue || "",
-            unit: f.unit?.stringValue || "-",
-            role: (f.role?.stringValue || "safety_officer") as UserRole,
+            bufn,
+            smelter,
+            unit:
+              f.unit?.stringValue ||
+              (bufn === "ALL" ? "Comprehensive HSE" : `${bufn} - ${smelter}`),
+            role,
             isActive: f.isActive?.booleanValue ?? true,
           };
         }
       )
-      .filter((u: OfficerOption & { isActive: boolean }) => u.isActive && u.uid)
-      .sort((a: OfficerOption, b: OfficerOption) => a.name.localeCompare(b.name));
+      .filter((u: OfficerOption & { isActive: boolean }) => {
+        if (!u.isActive || !u.uid) return false;
+        // Admin BUFN hanya melihat Safety Officer di BUFN-nya sendiri
+        if (isAdmin) {
+          return u.role === "safety_officer" && u.bufn === currentUser.bufn;
+        }
+        return u.role === "safety_officer";
+      })
+      .sort((a: OfficerOption, b: OfficerOption) =>
+        a.name.localeCompare(b.name)
+      );
   }
 
   return (
-    <KpiCardView currentUser={currentUser} officerList={officerList} />
+    <KpiCardView
+      currentUser={currentUser}
+      officerList={officerList}
+      workAreas={workAreas}
+    />
   );
 }
 
@@ -77,7 +109,7 @@ export default function KpiCardPage() {
             Kartu KPI Bulanan Safety Officer
           </h1>
           <p className="mt-0.5 text-sm text-slate-300">
-            Rincian pencapaian target bulanan, kalkulasi bobot otomatis, dan rekap skor KPI.
+            Penilaian kinerja bulanan berdasarkan lokasi BUFN & Smelter, kalkulasi rumus otomatis, dan predikat nilai standar.
           </p>
         </div>
 
