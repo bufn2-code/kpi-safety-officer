@@ -47,12 +47,10 @@ export default function UsersManager({
   const [showAddForm, setShowAddForm] = useState(false);
   const [showAreaManager, setShowAreaManager] = useState(false);
 
-  // Dialog konfirmasi modern pengganti window.confirm
   const [confirmDialog, setConfirmDialog] =
     useState<ConfirmDialogState | null>(null);
   const [confirmProcessing, setConfirmProcessing] = useState(false);
 
-  // Form tambah pengguna
   const defaultBufn = isSuperAdmin
     ? workAreas[0]?.name || "BUFN 1"
     : currentUser.bufn;
@@ -61,6 +59,7 @@ export default function UsersManager({
 
   const [employeeId, setEmployeeId] = useState("");
   const [name, setName] = useState("");
+  const [email, setEmail] = useState("");
   const [role, setRole] = useState<UserRole>("safety_officer");
   const [jobTitle, setJobTitle] = useState<JobTitle>("Safety Officer");
   const [kpiCategory, setKpiCategory] = useState<KpiCategory>("shift_3g2s");
@@ -69,16 +68,15 @@ export default function UsersManager({
   const [password, setPassword] = useState("");
   const [submitting, setSubmitting] = useState(false);
 
-  // Kelola BUFN & Smelter
   const [newBufnName, setNewBufnName] = useState("");
   const [targetBufnSmelter, setTargetBufnSmelter] = useState(defaultBufn);
   const [newSmelterName, setNewSmelterName] = useState("");
   const [savingArea, setSavingArea] = useState(false);
 
-  // Modal edit & mutasi
   const [editingUser, setEditingUser] = useState<ManagedUser | null>(null);
   const [editName, setEditName] = useState("");
   const [editEmployeeId, setEditEmployeeId] = useState("");
+  const [editEmail, setEditEmail] = useState("");
   const [editRole, setEditRole] = useState<UserRole>("safety_officer");
   const [editJobTitle, setEditJobTitle] = useState<JobTitle>("Safety Officer");
   const [editKpiCategory, setEditKpiCategory] =
@@ -113,6 +111,7 @@ export default function UsersManager({
     return (
       u.name.toLowerCase().includes(q) ||
       u.employeeId.toLowerCase().includes(q) ||
+      u.email.toLowerCase().includes(q) ||
       u.jobTitle.toLowerCase().includes(q) ||
       u.bufn.toLowerCase().includes(q) ||
       u.smelter.toLowerCase().includes(q)
@@ -160,6 +159,7 @@ export default function UsersManager({
         body: JSON.stringify({
           employeeId,
           name,
+          email,
           role: isSuperAdmin ? role : "safety_officer",
           jobTitle,
           kpiCategory,
@@ -181,6 +181,7 @@ export default function UsersManager({
       setBanner({ type: "ok", text: data.pesan });
       setEmployeeId("");
       setName("");
+      setEmail("");
       setPassword("");
       setShowAddForm(false);
       await reloadData();
@@ -342,6 +343,7 @@ export default function UsersManager({
     setEditingUser(u);
     setEditName(u.name);
     setEditEmployeeId(u.employeeId);
+    setEditEmail(u.email || "");
     setEditRole(u.role);
     setEditJobTitle(u.jobTitle || "Safety Officer");
     setEditKpiCategory(u.kpiCategory || "shift_3g2s");
@@ -371,6 +373,7 @@ export default function UsersManager({
         body: JSON.stringify({
           name: editName,
           employeeId: editEmployeeId,
+          email: editEmail,
           role: isSuperAdmin ? editRole : editingUser.role,
           jobTitle: editJobTitle,
           kpiCategory: editKpiCategory,
@@ -488,7 +491,7 @@ export default function UsersManager({
         <div className="flex flex-1 flex-wrap items-center gap-2.5">
           <input
             type="text"
-            placeholder="Cari nama, ID, jabatan, atau smelter..."
+            placeholder="Cari nama, ID, email, jabatan, atau smelter..."
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             className="w-full sm:w-64 rounded-lg border border-[#495057] bg-[#212529] px-3.5 py-2 text-sm text-[#F1F3F5] placeholder-slate-400 focus:border-[#5B7C99] focus:outline-none"
@@ -562,7 +565,7 @@ export default function UsersManager({
         </div>
       </div>
 
-      {/* Panel Kelola BUFN & Smelter (Tambah & Hapus Penuh + Auto-Sort A-Z) */}
+      {/* Panel Kelola BUFN & Smelter */}
       {showAreaManager && (
         <div className="space-y-5 rounded-xl border border-[#7A9278]/50 bg-[#2B3035] p-5">
           <div>
@@ -719,7 +722,7 @@ export default function UsersManager({
               <input
                 type="text"
                 required
-                placeholder="Contoh: IWIP-1042"
+                placeholder="Contoh: 8212121"
                 value={employeeId}
                 onChange={(e) => setEmployeeId(e.target.value)}
                 className="w-full rounded-lg border border-[#495057] bg-[#212529] px-3 py-2 text-sm text-[#F1F3F5] placeholder-slate-500"
@@ -736,6 +739,19 @@ export default function UsersManager({
                 placeholder="Nama lengkap"
                 value={name}
                 onChange={(e) => setName(e.target.value)}
+                className="w-full rounded-lg border border-[#495057] bg-[#212529] px-3 py-2 text-sm text-[#F1F3F5] placeholder-slate-500"
+              />
+            </div>
+
+            <div>
+              <label className="mb-1 block text-xs font-medium text-slate-300">
+                Email Karyawan (Untuk Pengiriman Slip KPI)
+              </label>
+              <input
+                type="email"
+                placeholder="nama.karyawan@gmail.com"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
                 className="w-full rounded-lg border border-[#495057] bg-[#212529] px-3 py-2 text-sm text-[#F1F3F5] placeholder-slate-500"
               />
             </div>
@@ -900,7 +916,7 @@ export default function UsersManager({
         <table className="w-full border-collapse text-left text-sm">
           <thead>
             <tr className="border-b border-[#495057] bg-[#212529]/70 text-xs uppercase text-slate-400">
-              <th className="px-4 py-3">ID Karyawan</th>
+              <th className="px-4 py-3">ID & Email</th>
               <th className="px-4 py-3">Nama & Jabatan</th>
               <th className="px-4 py-3">Kategori KPI</th>
               <th className="px-4 py-3">BUFN & Smelter</th>
@@ -911,8 +927,17 @@ export default function UsersManager({
           <tbody className="divide-y divide-[#495057]/60">
             {filteredUsers.map((u) => (
               <tr key={u.uid} className="hover:bg-[#212529]/40">
-                <td className="px-4 py-3 font-mono text-xs text-slate-300">
-                  {u.employeeId}
+                <td className="px-4 py-3">
+                  <div className="font-mono text-xs text-slate-200">
+                    {u.employeeId}
+                  </div>
+                  <div className="mt-0.5 text-[11px] text-slate-400">
+                    {u.email || (
+                      <span className="italic text-amber-400/80">
+                        Email belum diisi
+                      </span>
+                    )}
+                  </div>
                 </td>
                 <td className="px-4 py-3">
                   <div className="font-medium text-[#F1F3F5]">{u.name}</div>
@@ -1005,7 +1030,7 @@ export default function UsersManager({
         </table>
       </div>
 
-      {/* Modal Konfirmasi Kustom (Pengganti Browser Alert) */}
+      {/* Modal Konfirmasi Kustom */}
       {confirmDialog && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 p-4 backdrop-blur-xs">
           <div className="w-full max-w-md overflow-hidden rounded-xl border border-[#495057] bg-[#2B3035] shadow-2xl">
@@ -1057,7 +1082,7 @@ export default function UsersManager({
         </div>
       )}
 
-      {/* Modal Edit & Mutasi Lokasi / Jabatan */}
+      {/* Modal Edit & Mutasi Lokasi / Jabatan / Email */}
       {editingUser && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4">
           <form
@@ -1092,6 +1117,19 @@ export default function UsersManager({
                   value={editName}
                   onChange={(e) => setEditName(e.target.value)}
                   className="w-full rounded-lg border border-[#495057] bg-[#212529] px-3 py-2 text-sm text-[#F1F3F5]"
+                />
+              </div>
+
+              <div className="sm:col-span-2">
+                <label className="mb-1 block text-xs font-medium text-slate-300">
+                  Email Karyawan (Penerima Slip KPI)
+                </label>
+                <input
+                  type="email"
+                  placeholder="nama.karyawan@gmail.com"
+                  value={editEmail}
+                  onChange={(e) => setEditEmail(e.target.value)}
+                  className="w-full rounded-lg border border-[#495057] bg-[#212529] px-3 py-2 text-sm text-[#F1F3F5] placeholder-slate-500"
                 />
               </div>
 

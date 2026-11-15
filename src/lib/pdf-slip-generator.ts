@@ -24,7 +24,39 @@ function getGradeBadgeStyle(color: string): string {
   return "background:#e0f2fe;color:#075985;border:1px solid #7dd3fc;";
 }
 
-function renderSinglePersonSlipHtml(
+function formatLocationLabel(row: PersonRecapRow): string {
+  const b = (row.bufn || "").trim();
+  const s = (row.smelter || "").trim();
+  if (b && s && s !== "-" && s !== "ALL") {
+    return `${b} — ${s}`;
+  }
+  return b || "-";
+}
+
+function renderSignatureBlock(row: PersonRecapRow): string {
+  const sigImg = row.verifierSignatureDataUrl
+    ? `<img src="${row.verifierSignatureDataUrl}" alt="Tanda Tangan" style="max-height:46px;max-width:150px;object-fit:contain;display:block;margin:2px auto;" />`
+    : `<div style="height:42px;"></div>`;
+
+  return `
+    <div style="width:195px;text-align:center;font-size:10px;color:#334155;">
+      <div style="font-weight:600;color:#475569;">Diverifikasi Oleh,</div>
+      <div style="min-height:48px;display:flex;align-items:center;justify-content:center;">
+        ${sigImg}
+      </div>
+      <div style="border-top:1px solid #64748b;padding-top:3px;font-weight:700;color:#0f172a;font-size:10.5px;">
+        ${escapeHtml(row.verifierName)}
+      </div>
+      ${
+        row.verifierTitle
+          ? `<div style="font-size:9px;color:#64748b;">${escapeHtml(row.verifierTitle)}</div>`
+          : ""
+      }
+    </div>
+  `;
+}
+
+export function renderSinglePersonSlipHtml(
   row: PersonRecapRow,
   mode: PdfExportMode,
   filterSubtitle: string
@@ -39,48 +71,25 @@ function renderSinglePersonSlipHtml(
       ? `${row.totalScore}%`
       : "Belum Dinilai";
 
-  const historyColsHeader = row.yearlyHistory
-    .map(
-      (h) =>
-        `<th style="border:1px solid #cbd5e1;padding:5px 4px;text-align:center;font-size:10px;background:#f1f5f9;color:#334155;">${escapeHtml(h.label)}</th>`
-    )
-    .join("");
+  const locationDisplay = formatLocationLabel(row);
 
-  const historyColsScore = row.yearlyHistory
-    .map((h) => {
-      const isCurrent = !isYearly && h.period === row.period;
-      const bg = isCurrent ? "background:#eff6ff;font-weight:700;" : "";
-      const val = h.hasData ? `${h.totalScore}%` : "-";
-      return `<td style="border:1px solid #cbd5e1;padding:5px 4px;text-align:center;font-size:10px;${bg}">${val}</td>`;
-    })
-    .join("");
-
-  const historyColsGrade = row.yearlyHistory
-    .map((h) => {
-      const isCurrent = !isYearly && h.period === row.period;
-      const bg = isCurrent ? "background:#eff6ff;font-weight:700;" : "";
-      const val = h.hasData ? escapeHtml(h.gradeLetter) : "-";
-      return `<td style="border:1px solid #cbd5e1;padding:4px;text-align:center;font-size:10px;color:#475569;${bg}">${val}</td>`;
-    })
-    .join("");
-
-  // Rincian Indikator (untuk Slip Bulanan)
+  // Rincian Indikator Bulan Berjalan (Kolom Kiri Slip Bulanan)
   const entriesTableHtml =
     !isYearly && row.entries.length > 0
       ? `
-      <div style="margin-top:14px;">
-        <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:0.5px;color:#1e293b;margin-bottom:6px;">
-          Rincian Penilaian Indikator KPI (${escapeHtml(row.period)})
+      <div>
+        <div style="font-size:10.5px;font-weight:700;text-transform:uppercase;letter-spacing:0.4px;color:#1e293b;margin-bottom:5px;">
+          Rincian Penilaian Indikator Bulan Berjalan (${escapeHtml(row.period)})
         </div>
-        <table style="width:100%;border-collapse:collapse;font-size:10.5px;">
+        <table style="width:100%;border-collapse:collapse;font-size:10px;">
           <thead>
-            <tr style="background:#f8fafc;color:#334155;">
-              <th style="border:1px solid #cbd5e1;padding:6px;text-align:left;width:68px;">Kode</th>
-              <th style="border:1px solid #cbd5e1;padding:6px;text-align:left;">Indikator Kinerja</th>
-              <th style="border:1px solid #cbd5e1;padding:6px;text-align:center;width:78px;">Target</th>
-              <th style="border:1px solid #cbd5e1;padding:6px;text-align:center;width:78px;">Realisasi</th>
-              <th style="border:1px solid #cbd5e1;padding:6px;text-align:center;width:62px;">Bobot</th>
-              <th style="border:1px solid #cbd5e1;padding:6px;text-align:right;width:68px;">Skor</th>
+            <tr style="background:#f1f5f9;color:#334155;">
+              <th style="border:1px solid #cbd5e1;padding:5px;text-align:left;width:54px;">Kode</th>
+              <th style="border:1px solid #cbd5e1;padding:5px;text-align:left;">Indikator Kinerja</th>
+              <th style="border:1px solid #cbd5e1;padding:5px;text-align:center;width:62px;">Target</th>
+              <th style="border:1px solid #cbd5e1;padding:5px;text-align:center;width:64px;">Aktual</th>
+              <th style="border:1px solid #cbd5e1;padding:5px;text-align:center;width:48px;">Bobot</th>
+              <th style="border:1px solid #cbd5e1;padding:5px;text-align:right;width:52px;">Skor</th>
             </tr>
           </thead>
           <tbody>
@@ -89,22 +98,22 @@ function renderSinglePersonSlipHtml(
                 const isBonus = item.formulaType === "bonus_point";
                 const targetStr =
                   item.formulaType === "yes_no"
-                    ? "Wajib (Ya)"
+                    ? "Wajib"
                     : item.formulaType === "direct_percentage"
                       ? "100%"
                       : isBonus
-                        ? `+${item.target}/${item.unit}`
+                        ? `+${item.target}`
                         : `${item.target} ${item.unit}`;
                 const actualStr =
                   item.formulaType === "yes_no"
                     ? item.actual >= 1
-                      ? "Tercapai"
+                      ? "Ya"
                       : "Tidak"
                     : item.formulaType === "direct_percentage"
                       ? `${item.actual}%`
                       : `${item.actual} ${item.unit}`;
                 const weightStr = isBonus
-                  ? `Maks +${item.weight}`
+                  ? `+${item.weight}`
                   : `${item.weight}%`;
                 const scoreStr = isBonus
                   ? `+${item.score}`
@@ -112,15 +121,15 @@ function renderSinglePersonSlipHtml(
 
                 return `
                   <tr>
-                    <td style="border:1px solid #cbd5e1;padding:5px 6px;font-family:monospace;font-weight:600;">${escapeHtml(item.code)}</td>
-                    <td style="border:1px solid #cbd5e1;padding:5px 6px;">
+                    <td style="border:1px solid #cbd5e1;padding:4.5px 5px;font-family:monospace;font-weight:600;">${escapeHtml(item.code)}</td>
+                    <td style="border:1px solid #cbd5e1;padding:4.5px 5px;">
                       <div style="font-weight:600;color:#0f172a;">${escapeHtml(item.name)}</div>
-                      <div style="font-size:9px;color:#64748b;">${escapeHtml(FORMULA_LABELS[item.formulaType || "higher_better"])}${item.notes ? ` • Catatan: ${escapeHtml(item.notes)}` : ""}</div>
+                      <div style="font-size:8.5px;color:#64748b;">${escapeHtml(FORMULA_LABELS[item.formulaType || "higher_better"])}${item.notes ? ` • ${escapeHtml(item.notes)}` : ""}</div>
                     </td>
-                    <td style="border:1px solid #cbd5e1;padding:5px 6px;text-align:center;">${escapeHtml(targetStr)}</td>
-                    <td style="border:1px solid #cbd5e1;padding:5px 6px;text-align:center;font-weight:600;">${escapeHtml(actualStr)}</td>
-                    <td style="border:1px solid #cbd5e1;padding:5px 6px;text-align:center;">${escapeHtml(weightStr)}</td>
-                    <td style="border:1px solid #cbd5e1;padding:5px 6px;text-align:right;font-weight:700;color:#0f172a;">${escapeHtml(scoreStr)}</td>
+                    <td style="border:1px solid #cbd5e1;padding:4.5px 5px;text-align:center;">${escapeHtml(targetStr)}</td>
+                    <td style="border:1px solid #cbd5e1;padding:4.5px 5px;text-align:center;font-weight:600;">${escapeHtml(actualStr)}</td>
+                    <td style="border:1px solid #cbd5e1;padding:4.5px 5px;text-align:center;">${escapeHtml(weightStr)}</td>
+                    <td style="border:1px solid #cbd5e1;padding:4.5px 5px;text-align:right;font-weight:700;color:#0f172a;">${escapeHtml(scoreStr)}</td>
                   </tr>
                 `;
               })
@@ -130,38 +139,124 @@ function renderSinglePersonSlipHtml(
       </div>
     `
       : !isYearly
-        ? `<div style="margin-top:14px;padding:10px;border:1px dashed #cbd5e1;border-radius:6px;font-size:11px;color:#64748b;text-align:center;">Belum ada rincian indikator bulanan yang diinput untuk periode ${escapeHtml(row.period)}.</div>`
+        ? `<div style="padding:12px;border:1px dashed #cbd5e1;border-radius:6px;font-size:10.5px;color:#64748b;text-align:center;">Belum ada rincian indikator bulanan yang diinput untuk periode ${escapeHtml(row.period)}.</div>`
         : "";
 
   // Rincian Komposisi Khusus Wakil Supervisor
   const spvSectionHtml =
     !isYearly && isWakilSpv && row.supervisorBreakdown
       ? `
-      <div style="margin-top:12px;border:1px solid #cbd5e1;border-radius:6px;padding:10px;background:#f8fafc;">
-        <div style="font-size:10.5px;font-weight:700;text-transform:uppercase;color:#1e293b;margin-bottom:6px;">
+      <div style="margin-top:10px;border:1px solid #cbd5e1;border-radius:6px;padding:8px 10px;background:#f8fafc;">
+        <div style="font-size:9.5px;font-weight:700;text-transform:uppercase;color:#1e293b;margin-bottom:4px;">
           Komposisi Nilai Wakil Supervisor (${row.supervisorBreakdown.personalWeightPct}% Pribadi + ${row.supervisorBreakdown.teamWeightPct}% Tim ${escapeHtml(row.smelter)})
         </div>
-        <table style="width:100%;border-collapse:collapse;font-size:10px;">
+        <table style="width:100%;border-collapse:collapse;font-size:9.5px;">
           <tr>
-            <td style="padding:3px 0;color:#475569;">1. Skor Indikator Pribadi (${row.supervisorBreakdown.personalWeightPct}%):</td>
-            <td style="padding:3px 0;text-align:right;font-weight:700;">${row.supervisorBreakdown.personalWeightedScore} poin (dari skor ${row.supervisorBreakdown.personalRawScore}%)</td>
+            <td style="padding:2px 0;color:#475569;">1. Skor Pribadi (${row.supervisorBreakdown.personalWeightPct}%):</td>
+            <td style="padding:2px 0;text-align:right;font-weight:700;">${row.supervisorBreakdown.personalWeightedScore} poin</td>
           </tr>
           <tr>
-            <td style="padding:3px 0;color:#475569;">2. Porsi Kinerja Tim Area (${row.supervisorBreakdown.teamWeightPct}% — ${row.supervisorBreakdown.teamCalcMode === "option_a" ? "Opsi A" : "Opsi B"}):</td>
-            <td style="padding:3px 0;text-align:right;font-weight:700;">${row.supervisorBreakdown.teamWeightedScore} poin (Awal ${row.supervisorBreakdown.baseTeamPoints} − Penalti ${row.supervisorBreakdown.totalPenalty} dari ${row.supervisorBreakdown.failedMembersCount} anggota gagal)</td>
+            <td style="padding:2px 0;color:#475569;">2. Porsi Tim (${row.supervisorBreakdown.teamWeightPct}%):</td>
+            <td style="padding:2px 0;text-align:right;font-weight:700;">${row.supervisorBreakdown.teamWeightedScore} poin (Awal ${row.supervisorBreakdown.baseTeamPoints} − Penalti ${row.supervisorBreakdown.totalPenalty})</td>
           </tr>
           <tr style="border-top:1px solid #cbd5e1;">
-            <td style="padding:4px 0 0;font-weight:700;color:#0f172a;">Total Nilai Gabungan Wakil Supervisor:</td>
-            <td style="padding:4px 0 0;text-align:right;font-weight:800;font-size:11px;color:#0f172a;">${row.totalScore}%</td>
+            <td style="padding:3px 0 0;font-weight:700;color:#0f172a;">Total Gabungan:</td>
+            <td style="padding:3px 0 0;text-align:right;font-weight:800;color:#0f172a;">${row.totalScore}%</td>
           </tr>
         </table>
       </div>
     `
       : "";
 
-  // Ringkasan Evaluasi Tahunan (untuk Rapor Tahunan)
-  const yearlySummaryHtml = isYearly
+  // Tabel Histori Terpisah di Kolom Kanan (untuk Slip Bulanan)
+  const sideHistoryHtml = !isYearly
     ? `
+      <div style="width:185px;shrink:0;border:1px solid #cbd5e1;border-radius:6px;padding:8px;background:#f8fafc;">
+        <div style="font-size:9.5px;font-weight:700;text-transform:uppercase;color:#334155;border-bottom:1px solid #cbd5e1;padding-bottom:4px;margin-bottom:5px;text-align:center;">
+          Rekam Jejak ${escapeHtml(row.year)}
+        </div>
+        <table style="width:100%;border-collapse:collapse;font-size:9.5px;">
+          <thead>
+            <tr style="color:#64748b;border-bottom:1px solid #e2e8f0;">
+              <th style="padding:2.5px 3px;text-align:left;">Bln</th>
+              <th style="padding:2.5px 3px;text-align:right;">Skor</th>
+              <th style="padding:2.5px 3px;text-align:center;">Grd</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${row.yearlyHistory
+              .map((h) => {
+                const isCurrent = h.period === row.period;
+                const rowBg = isCurrent
+                  ? "background:#dbeafe;font-weight:700;color:#1e3a8a;"
+                  : "";
+                return `
+                  <tr style="border-bottom:1px solid #f1f5f9;${rowBg}">
+                    <td style="padding:2.5px 3px;">${escapeHtml(h.label)}</td>
+                    <td style="padding:2.5px 3px;text-align:right;">${h.hasData ? `${h.totalScore}%` : "-"}</td>
+                    <td style="padding:2.5px 3px;text-align:center;">${h.hasData ? escapeHtml(h.gradeLetter) : "-"}</td>
+                  </tr>
+                `;
+              })
+              .join("")}
+          </tbody>
+          <tfoot>
+            <tr style="border-top:1px solid #94a3b8;background:#e2e8f0;font-weight:800;color:#0f172a;">
+              <td style="padding:4px 3px;">Rata2</td>
+              <td style="padding:4px 3px;text-align:right;">${row.assessedMonthsCount > 0 ? `${row.yearlyAverageScore}%` : "-"}</td>
+              <td style="padding:4px 3px;text-align:center;">${row.assessedMonthsCount > 0 ? escapeHtml(row.yearlyGrade.grade) : "-"}</td>
+            </tr>
+          </tfoot>
+        </table>
+      </div>
+    `
+    : "";
+
+  // Layout Khusus Rapor Tahunan (Tabel 12 Bulan Penuh + Ringkasan Tahunan)
+  const yearlyBodyHtml = isYearly
+    ? `
+      <div style="margin-top:14px;">
+        <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:0.5px;color:#1e293b;margin-bottom:6px;">
+          Rekapitulasi Capaian Kinerja Tahun ${escapeHtml(row.year)} (Januari – Desember)
+        </div>
+        <table style="width:100%;border-collapse:collapse;">
+          <thead>
+            <tr>
+              <th style="border:1px solid #cbd5e1;padding:5px 6px;text-align:left;font-size:10px;background:#f1f5f9;color:#334155;width:62px;">Bulan</th>
+              ${row.yearlyHistory
+                .map(
+                  (h) =>
+                    `<th style="border:1px solid #cbd5e1;padding:5px 4px;text-align:center;font-size:10px;background:#f1f5f9;color:#334155;">${escapeHtml(h.label)}</th>`
+                )
+                .join("")}
+              <th style="border:1px solid #cbd5e1;padding:5px 6px;text-align:center;font-size:10px;background:#e2e8f0;color:#0f172a;width:62px;">Rata2</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td style="border:1px solid #cbd5e1;padding:5px 6px;font-size:10px;font-weight:700;background:#f8fafc;">Skor</td>
+              ${row.yearlyHistory
+                .map(
+                  (h) =>
+                    `<td style="border:1px solid #cbd5e1;padding:5px 4px;text-align:center;font-size:10px;">${h.hasData ? `${h.totalScore}%` : "-"}</td>`
+                )
+                .join("")}
+              <td style="border:1px solid #cbd5e1;padding:5px 6px;text-align:center;font-size:10px;font-weight:800;background:#f1f5f9;">${row.assessedMonthsCount > 0 ? `${row.yearlyAverageScore}%` : "-"}</td>
+            </tr>
+            <tr>
+              <td style="border:1px solid #cbd5e1;padding:4px 6px;font-size:10px;font-weight:600;background:#f8fafc;color:#475569;">Grade</td>
+              ${row.yearlyHistory
+                .map(
+                  (h) =>
+                    `<td style="border:1px solid #cbd5e1;padding:4px;text-align:center;font-size:10px;color:#475569;">${h.hasData ? escapeHtml(h.gradeLetter) : "-"}</td>`
+                )
+                .join("")}
+              <td style="border:1px solid #cbd5e1;padding:4px 6px;text-align:center;font-size:10px;font-weight:700;background:#f1f5f9;">${row.assessedMonthsCount > 0 ? escapeHtml(row.yearlyGrade.grade) : "-"}</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
       <div style="margin-top:14px;border:1px solid #cbd5e1;border-radius:6px;padding:12px;background:#f8fafc;">
         <div style="font-size:11px;font-weight:700;text-transform:uppercase;color:#1e293b;margin-bottom:8px;">
           Ringkasan Evaluasi Kinerja Tahun ${escapeHtml(row.year)}
@@ -184,16 +279,26 @@ function renderSinglePersonSlipHtml(
     `
     : "";
 
+  const evaluationNoteTitle = isYearly
+    ? `Catatan Evaluasi Tahunan Supervisor Area (${escapeHtml(row.year)}):`
+    : "Catatan Evaluasi Admin / Supervisor:";
+
+  const evaluationNoteBody = isYearly
+    ? row.yearlySpvNote ||
+      "Evaluasi tahunan kinerja K3 dan kepatuhan standar operasional berjalan baik."
+    : row.adminFeedback ||
+      "Pertahankan kedisiplinan pelaksanaan standar K3 dan pelaporan tepat waktu.";
+
   return `
     <section class="slip-page">
       <!-- Header Korporat -->
       <div style="display:flex;justify-content:space-between;align-items:flex-start;border-bottom:2px solid #0f172a;padding-bottom:10px;">
         <div>
           <div style="font-size:10px;font-weight:700;letter-spacing:1px;text-transform:uppercase;color:#475569;">
-            PT INDONESIA WEDA BAY INDUSTRIAL PARK (PT IWIP)
+            KPI SAFETY OFFICER BUFN
           </div>
-          <div style="font-size:16px;font-weight:800;color:#0f172a;margin-top:2px;">
-            ${isYearly ? `LAPORAN EVALUASI KPI TAHUNAN (${escapeHtml(row.year)})` : "SLIP HASIL PENILAIAN KINERJA (KPI HSE)"}
+          <div style="font-size:15.5px;font-weight:800;color:#0f172a;margin-top:2px;">
+            ${isYearly ? `LAPORAN EVALUASI KPI TAHUNAN (${escapeHtml(row.year)})` : "SLIP HASIL PENILAIAN KINERJA"}
           </div>
           <div style="font-size:10px;color:#64748b;margin-top:2px;">
             Comprehensive Health, Safety & Environment Department • ${escapeHtml(filterSubtitle)}
@@ -229,14 +334,14 @@ function renderSinglePersonSlipHtml(
           </tr>
           <tr>
             <td style="padding:2.5px 0;color:#64748b;">Wilayah / Lokasi</td>
-            <td style="padding:2.5px 0;font-weight:600;color:#0f172a;">: ${escapeHtml(row.bufn)} — ${escapeHtml(row.smelter)}</td>
+            <td style="padding:2.5px 0;font-weight:700;color:#0f172a;">: ${escapeHtml(locationDisplay)}</td>
           </tr>
         </table>
 
         <div style="display:flex;align-items:center;gap:10px;border-left:1px solid #e2e8f0;padding-left:14px;">
           <div style="text-align:right;">
             <div style="font-size:9.5px;text-transform:uppercase;color:#64748b;">
-              ${isYearly ? "Rata-rata Tahunan" : "Skor Akhir KPI"}
+              ${isYearly ? "Rata-rata Tahunan" : `Skor ${escapeHtml(row.period)}`}
             </div>
             <div style="font-size:22px;font-weight:800;color:#0f172a;line-height:1.1;">
               ${escapeHtml(headlineScore)}
@@ -268,63 +373,40 @@ function renderSinglePersonSlipHtml(
         </div>
       </div>
 
-      <!-- Tabel Histori Nilai 1 Tahun Berjalan (Jan - Des) -->
-      <div style="margin-top:14px;">
-        <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:0.5px;color:#1e293b;margin-bottom:5px;">
-          Rekam Jejak Nilai KPI Tahun ${escapeHtml(row.year)} (Januari – Desember)
+      ${
+        isYearly
+          ? yearlyBodyHtml
+          : `
+        <!-- Layout 2 Kolom Terpisah: Kiri = Data Bulan Berjalan, Kanan = Histori Jan-Des -->
+        <div style="display:flex;align-items:flex-start;gap:12px;margin-top:12px;">
+          <div style="flex:1;min-width:0;">
+            ${entriesTableHtml}
+            ${spvSectionHtml}
+          </div>
+          ${sideHistoryHtml}
         </div>
-        <table style="width:100%;border-collapse:collapse;">
-          <thead>
-            <tr>
-              <th style="border:1px solid #cbd5e1;padding:5px 6px;text-align:left;font-size:10px;background:#f1f5f9;color:#334155;width:62px;">Bulan</th>
-              ${historyColsHeader}
-              <th style="border:1px solid #cbd5e1;padding:5px 6px;text-align:center;font-size:10px;background:#e2e8f0;color:#0f172a;width:62px;">Rata2</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr>
-              <td style="border:1px solid #cbd5e1;padding:5px 6px;font-size:10px;font-weight:700;background:#f8fafc;">Skor</td>
-              ${historyColsScore}
-              <td style="border:1px solid #cbd5e1;padding:5px 6px;text-align:center;font-size:10px;font-weight:800;background:#f1f5f9;">${row.assessedMonthsCount > 0 ? `${row.yearlyAverageScore}%` : "-"}</td>
-            </tr>
-            <tr>
-              <td style="border:1px solid #cbd5e1;padding:4px 6px;font-size:10px;font-weight:600;background:#f8fafc;color:#475569;">Grade</td>
-              ${historyColsGrade}
-              <td style="border:1px solid #cbd5e1;padding:4px 6px;text-align:center;font-size:10px;font-weight:700;background:#f1f5f9;">${row.assessedMonthsCount > 0 ? escapeHtml(row.yearlyGrade.grade) : "-"}</td>
-            </tr>
-          </tbody>
-        </table>
-      </div>
+      `
+      }
 
-      ${entriesTableHtml}
-      ${spvSectionHtml}
-      ${yearlySummaryHtml}
-
-      <!-- Catatan Evaluasi & Tanda Tangan -->
+      <!-- Catatan Evaluasi & Kolom Verifikasi dengan Tanda Tangan Digital -->
       <div style="margin-top:14px;display:flex;justify-content:space-between;gap:16px;align-items:flex-end;">
-        <div style="flex:1;border:1px solid #cbd5e1;border-radius:6px;padding:8px 10px;min-height:54px;background:#f8fafc;">
-          <div style="font-size:9.5px;font-weight:700;text-transform:uppercase;color:#475569;">Catatan Evaluasi Admin / Supervisor:</div>
-          <div style="font-size:10.5px;color:#1e293b;margin-top:3px;">
-            ${escapeHtml(row.adminFeedback || "Pertahankan kedisiplinan pelaksanaan standar K3 dan pelaporan tepat waktu.")}
+        <div style="flex:1;border:1px solid #cbd5e1;border-radius:6px;padding:8px 10px;min-height:66px;background:#f8fafc;">
+          <div style="font-size:9.5px;font-weight:700;text-transform:uppercase;color:#475569;">${evaluationNoteTitle}</div>
+          <div style="font-size:10.5px;color:#1e293b;margin-top:3px;line-height:1.4;">
+            ${escapeHtml(evaluationNoteBody)}
           </div>
           ${
-            row.gateTriggered
-              ? `<div style="font-size:9.5px;color:#b45309;font-weight:600;margin-top:4px;">* Catatan Sistem: Predikat tertahan di Grade ${escapeHtml(row.grade.grade)} karena indikator wajib (${escapeHtml(row.failedCoreCodes.join(", "))}) belum tercapai.</div>`
+            !isYearly && row.gateTriggered
+              ? `<div style="font-size:9px;color:#b45309;font-weight:600;margin-top:4px;">* Catatan Sistem: Predikat tertahan di Grade ${escapeHtml(row.grade.grade)} karena indikator wajib (${escapeHtml(row.failedCoreCodes.join(", "))}) belum tercapai.</div>`
               : ""
           }
         </div>
 
-        <div style="width:190px;text-align:center;font-size:10px;color:#334155;">
-          <div>Diverifikasi Oleh,</div>
-          <div style="height:36px;"></div>
-          <div style="border-top:1px solid #64748b;padding-top:3px;font-weight:700;color:#0f172a;">
-            ${escapeHtml(row.assessedBy || "Comprehensive HSE Dept.")}
-          </div>
-        </div>
+        ${renderSignatureBlock(row)}
       </div>
 
       <div style="margin-top:10px;border-top:1px dashed #cbd5e1;padding-top:5px;display:flex;justify-content:space-between;font-size:9px;color:#94a3b8;">
-        <span>Dokumen Rahasia Internal • Slip Evaluasi KPI HSE PT IWIP</span>
+        <span>Dokumen Rahasia Internal • Slip Evaluasi KPI HSE BUFN</span>
         <span>Dicetak pada: ${new Date().toLocaleDateString("id-ID", { day: "2-digit", month: "long", year: "numeric" })}</span>
       </div>
     </section>
@@ -338,7 +420,7 @@ export function openPdfPrintWindow(
 ): boolean {
   if (rows.length === 0) return false;
 
-  const printWin = window.open("", "_blank", "width=960,height=800");
+  const printWin = window.open("", "_blank", "width=980,height=820");
   if (!printWin) return false;
 
   const pagesHtml = rows
@@ -402,7 +484,7 @@ export function openPdfPrintWindow(
           min-height: 270mm;
           margin: 14px auto;
           background: #ffffff;
-          padding: 14mm;
+          padding: 13mm;
           box-shadow: 0 4px 14px rgba(15, 23, 42, 0.12);
           page-break-after: always;
           break-after: page;

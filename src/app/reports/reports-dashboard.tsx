@@ -3,6 +3,7 @@
 import { useState } from "react";
 import type { SessionUser } from "@/lib/session";
 import type { PersonRecapRow } from "@/lib/kpi-recap";
+import type { AreaVerifierConfig } from "@/lib/verifiers";
 import type { GradeThreshold, ScoringPolicy } from "@/lib/kpi-engine";
 import {
   JOB_TITLES,
@@ -23,6 +24,7 @@ interface RecapPayload {
   periodDateRange: string;
   policy: ScoringPolicy;
   grades: GradeThreshold[];
+  verifiers: AreaVerifierConfig[];
   rows: PersonRecapRow[];
 }
 
@@ -42,6 +44,7 @@ export default function ReportsDashboard({
   const isSuperAdmin = currentUser.role === "super_admin";
   const isAdmin = currentUser.role === "admin";
   const canFilterMulti = isSuperAdmin || isAdmin || isWakilSpv;
+  const canSendEmail = isSuperAdmin || isAdmin;
 
   const [recap, setRecap] = useState<RecapPayload>(initialRecap);
   const [period, setPeriod] = useState<string>(initialRecap.period);
@@ -59,19 +62,46 @@ export default function ReportsDashboard({
   const [filterStatus, setFilterStatus] = useState<string>("ALL");
   const [search, setSearch] = useState<string>("");
 
+  // Panel Verifikator & Tanda Tangan Digital
+  const [showVerifierPanel, setShowVerifierPanel] = useState<boolean>(false);
+  const [verScope, setVerScope] = useState<"global" | "bufn" | "smelter">(
+    isSuperAdmin ? "bufn" : isAdmin ? "bufn" : "smelter"
+  );
+  const [verBufn, setVerBufn] = useState<string>(
+    isSuperAdmin ? workAreas[0]?.name || "BUFN 1" : currentUser.bufn
+  );
+  const [verSmelter, setVerSmelter] = useState<string>(
+    isWakilSpv
+      ? currentUser.smelter
+      : workAreas[0]?.smelters[0] || ""
+  );
+  const [verName, setVerName] = useState<string>("");
+  const [verTitle, setVerTitle] = useState<string>("Supervisor HSE");
+  const [verSigDataUrl, setVerSigDataUrl] = useState<string>("");
+  const [savingVerifier, setSavingVerifier] = useState<boolean>(false);
+
+  // Modal Catatan Evaluasi Tahunan SPV
+  const [noteModalRow, setNoteModalRow] = useState<PersonRecapRow | null>(null);
+  const [yearlyNoteText, setYearlyNoteText] = useState<string>("");
+  const [savingNote, setSavingNote] = useState<boolean>(false);
+
+  // Modal Konfirmasi Kirim Email
+  const [emailConfirm, setEmailConfirm] = useState<{
+    rows: PersonRecapRow[];
+    mode: PdfExportMode;
+  } | null>(null);
+  const [sendingEmail, setSendingEmail] = useState<boolean>(false);
+
   const [banner, setBanner] = useState<{
     type: "ok" | "err";
     text: string;
   } | null>(null);
 
-  async function handlePeriodChange(nextPeriod: string) {
-    setPeriod(nextPeriod);
-    if (!/^\d{4}-\d{2}$/.test(nextPeriod)) return;
+  async function reloadRecap(targetPeriod = period) {
     setLoading(true);
-    setBanner(null);
     try {
       const res = await fetch(
-        `/api/reports/recap?period=${encodeURIComponent(nextPeriod)}`,
+        `/api/reports/recap?period=${encodeURIComponent(targetPeriod)}`,
         { cache: "no-store" }
       );
       const data = await res.json();
@@ -88,6 +118,13 @@ export default function ReportsDashboard({
     } finally {
       setLoading(false);
     }
+  }
+
+  async function handlePeriodChange(nextPeriod: string) {
+    setPeriod(nextPeriod);
+    if (!/^\d{4}-\d{2}$/.test(nextPeriod)) return;
+    setBanner(null);
+    await reloadRecap(nextPeriod);
   }
 
   const availableSmelters =
@@ -122,7 +159,6 @@ export default function ReportsDashboard({
     );
   });
 
-  // Statistik KPI Ringkas dari data terfilter
   const assessedRows = filteredRows.filter((r) => r.hasCard);
   const avgScore =
     assessedRows.length > 0
@@ -164,6 +200,149 @@ export default function ReportsDashboard({
     }
   }
 
+  function handleSignatureFileChange(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    if (file.size > 300 * 1024) {
+      setBanner({
+        type: "err",
+        text: "Ukuran file tanda tangan maksimal 300 KB (format PNG/JPG).",
+      });
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = () => {
+      if (typeof reader.result === "string") {
+        setVerSigDataUrl(reader.result);
+      }
+    };
+    reader.readAsDataURL(file);
+  }
+
+  async function handleSaveVerifier(e: React.FormEvent) {
+    e.preventDefault();
+    setSavingVerifier(true);
+    setBanner(null);
+    try {
+      const res = await fetch("/api/reports/verifiers", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "upsert_verifier",
+          scopeType: verScope,
+          bufn: verBufn,
+          smelter: verSmelter,
+          verifierName: verName,
+          verifierTitle: verTitle,
+          signatureDataUrl: verSigDataUrl,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.berhasil) {
+        setBanner({
+          type: "err",
+          text: data.pesan || "Gagal menyimpan verifikator.",
+        });
+      } else {
+        setBanner({ type: "ok", text: data.pesan });
+        setVerName("");
+        setVerSigDataUrl("");
+        await reloadRecap();
+      }
+    } catch {
+      setBanner({ type: "err", text: "Gagal terhubung ke server." });
+    } finally {
+      setSavingVerifier(false);
+    }
+  }
+
+  async function handleDeleteVerifier(id: string) {
+    setSavingVerifier(true);
+    setBanner(null);
+    try {
+      const res = await fetch("/api/reports/verifiers", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "delete_verifier", id }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.berhasil) {
+        setBanner({
+          type: "err",
+          text: data.pesan || "Gagal menghapus verifikator.",
+        });
+      } else {
+        setBanner({ type: "ok", text: data.pesan });
+        await reloadRecap();
+      }
+    } catch {
+      setBanner({ type: "err", text: "Gagal terhubung ke server." });
+    } finally {
+      setSavingVerifier(false);
+    }
+  }
+
+  async function handleSaveYearlySpvNote(e: React.FormEvent) {
+    e.preventDefault();
+    if (!noteModalRow) return;
+    setSavingNote(true);
+    setBanner(null);
+    try {
+      const res = await fetch("/api/reports/verifiers", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "save_yearly_note",
+          year: recap.year,
+          uid: noteModalRow.uid,
+          note: yearlyNoteText,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.berhasil) {
+        setBanner({
+          type: "err",
+          text: data.pesan || "Gagal menyimpan catatan tahunan.",
+        });
+      } else {
+        setBanner({ type: "ok", text: data.pesan });
+        setNoteModalRow(null);
+        await reloadRecap();
+      }
+    } catch {
+      setBanner({ type: "err", text: "Gagal terhubung ke server." });
+    } finally {
+      setSavingNote(false);
+    }
+  }
+
+  async function executeSendEmail() {
+    if (!emailConfirm) return;
+    setSendingEmail(true);
+    setBanner(null);
+    try {
+      const res = await fetch("/api/reports/send-email", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          period: recap.period,
+          mode: emailConfirm.mode,
+          uids: emailConfirm.rows.map((r) => r.uid),
+        }),
+      });
+      const data = await res.json();
+      setBanner({
+        type: data.berhasil ? "ok" : "err",
+        text: data.pesan || "Proses pengiriman email selesai.",
+      });
+    } catch {
+      setBanner({ type: "err", text: "Gagal terhubung ke server email." });
+    } finally {
+      setSendingEmail(false);
+      setEmailConfirm(null);
+    }
+  }
+
   function handleExportExcelCsv() {
     if (filteredRows.length === 0) {
       setBanner({
@@ -176,6 +355,7 @@ export default function ReportsDashboard({
     const headers = [
       "ID Karyawan",
       "Nama Lengkap",
+      "Email",
       "Jabatan",
       "Kategori Pola KPI",
       "BUFN",
@@ -209,6 +389,7 @@ export default function ReportsDashboard({
       const line = [
         `"${r.employeeId}"`,
         `"${r.name.replace(/"/g, '""')}"`,
+        `"${r.email}"`,
         `"${r.jobTitle}"`,
         `"${r.kpiCategoryLabel}"`,
         `"${r.bufn}"`,
@@ -226,7 +407,6 @@ export default function ReportsDashboard({
       csvLines.push(line.join(";"));
     }
 
-    // Tambahkan BOM UTF-8 agar karakter dan kolom langsung rapi saat dibuka di Microsoft Excel
     const bom = "\uFEFF";
     const blob = new Blob([bom + csvLines.join("\r\n")], {
       type: "text/csv;charset=utf-8;",
@@ -253,6 +433,19 @@ export default function ReportsDashboard({
     if (color === "red") return "bg-red-500/20 text-red-300";
     return "bg-[#5B7C99]/25 text-[#8BB3D6]";
   }
+
+  const verSmelterOptions =
+    workAreas.find((a) => a.name === verBufn)?.smelters || [];
+
+  const visibleVerifiers = recap.verifiers.filter((v) => {
+    if (isSuperAdmin) return true;
+    if (isAdmin) return v.bufn === currentUser.bufn || v.scopeType === "global";
+    return (
+      (v.bufn === currentUser.bufn &&
+        (v.smelter === currentUser.smelter || v.smelter === "ALL")) ||
+      v.scopeType === "global"
+    );
+  });
 
   return (
     <div className="space-y-6">
@@ -310,6 +503,227 @@ export default function ReportsDashboard({
           </p>
         </div>
       </div>
+
+      {/* Panel Pengaturan Verifikator & Upload Tanda Tangan Digital */}
+      {canFilterMulti && (
+        <div className="rounded-xl border border-[#495057] bg-[#2B3035] p-4">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div>
+              <h2 className="text-sm font-bold text-[#F1F3F5]">
+                Pejabat Verifikator & Tanda Tangan Digital Slip KPI
+              </h2>
+              <p className="text-xs text-slate-400">
+                Atur nama verifikator (tanpa ID) dan unggah gambar tanda tangan digital untuk dicetak otomatis pada Slip Bulanan & Rapor Tahunan.
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() => setShowVerifierPanel((prev) => !prev)}
+              className="rounded-lg border border-[#5B7C99] bg-[#5B7C99]/15 px-3.5 py-2 text-xs font-semibold text-[#8BB3D6] hover:bg-[#5B7C99]/30"
+            >
+              {showVerifierPanel
+                ? "Tutup Pengaturan TTD"
+                : "Atur Verifikator & Upload TTD"}
+            </button>
+          </div>
+
+          {showVerifierPanel && (
+            <div className="mt-4 space-y-4 border-t border-[#495057]/70 pt-4">
+              <form
+                onSubmit={handleSaveVerifier}
+                className="grid grid-cols-1 gap-3 rounded-lg border border-[#495057] bg-[#212529] p-4 sm:grid-cols-2 lg:grid-cols-3"
+              >
+                <div>
+                  <label className="mb-1 block text-xs font-medium text-slate-300">
+                    Cakupan Wilayah Verifikasi
+                  </label>
+                  <select
+                    value={verScope}
+                    onChange={(e) =>
+                      setVerScope(
+                        e.target.value as "global" | "bufn" | "smelter"
+                      )
+                    }
+                    className="w-full rounded-lg border border-[#495057] bg-[#2B3035] px-3 py-2 text-sm text-[#F1F3F5]"
+                  >
+                    {isSuperAdmin && (
+                      <option value="global">Global (Semua BUFN)</option>
+                    )}
+                    {(isSuperAdmin || isAdmin) && (
+                      <option value="bufn">Tingkat BUFN</option>
+                    )}
+                    <option value="smelter">Spesifik Smelter</option>
+                  </select>
+                </div>
+
+                {verScope !== "global" && (
+                  <div>
+                    <label className="mb-1 block text-xs font-medium text-slate-300">
+                      Wilayah BUFN
+                    </label>
+                    {isSuperAdmin ? (
+                      <select
+                        value={verBufn}
+                        onChange={(e) => {
+                          const nb = e.target.value;
+                          setVerBufn(nb);
+                          const list =
+                            workAreas.find((a) => a.name === nb)?.smelters ||
+                            [];
+                          setVerSmelter(list[0] || "");
+                        }}
+                        className="w-full rounded-lg border border-[#495057] bg-[#2B3035] px-3 py-2 text-sm text-[#F1F3F5]"
+                      >
+                        {workAreas.map((a) => (
+                          <option key={a.name} value={a.name}>
+                            {a.name}
+                          </option>
+                        ))}
+                      </select>
+                    ) : (
+                      <div className="rounded-lg border border-[#495057] bg-[#2B3035]/60 px-3 py-2 text-sm text-slate-200">
+                        {currentUser.bufn}
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {verScope === "smelter" && (
+                  <div>
+                    <label className="mb-1 block text-xs font-medium text-slate-300">
+                      Lokasi Smelter
+                    </label>
+                    {isSuperAdmin || isAdmin ? (
+                      <select
+                        value={verSmelter}
+                        onChange={(e) => setVerSmelter(e.target.value)}
+                        className="w-full rounded-lg border border-[#495057] bg-[#2B3035] px-3 py-2 text-sm text-[#F1F3F5]"
+                      >
+                        {verSmelterOptions.map((s) => (
+                          <option key={s} value={s}>
+                            {s}
+                          </option>
+                        ))}
+                      </select>
+                    ) : (
+                      <div className="rounded-lg border border-[#495057] bg-[#2B3035]/60 px-3 py-2 text-sm text-slate-200">
+                        {currentUser.smelter}
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                <div>
+                  <label className="mb-1 block text-xs font-medium text-slate-300">
+                    Nama Lengkap Verifikator (Tanpa ID)
+                  </label>
+                  <input
+                    type="text"
+                    required
+                    placeholder="Contoh: Budi Santoso"
+                    value={verName}
+                    onChange={(e) => setVerName(e.target.value)}
+                    className="w-full rounded-lg border border-[#495057] bg-[#2B3035] px-3 py-2 text-sm text-[#F1F3F5]"
+                  />
+                </div>
+
+                <div>
+                  <label className="mb-1 block text-xs font-medium text-slate-300">
+                    Jabatan Verifikator (Opsional)
+                  </label>
+                  <input
+                    type="text"
+                    placeholder="Contoh: Supervisor HSE BUFN 1"
+                    value={verTitle}
+                    onChange={(e) => setVerTitle(e.target.value)}
+                    className="w-full rounded-lg border border-[#495057] bg-[#2B3035] px-3 py-2 text-sm text-[#F1F3F5]"
+                  />
+                </div>
+
+                <div>
+                  <label className="mb-1 block text-xs font-medium text-slate-300">
+                    Upload Tanda Tangan (PNG/JPG maks 300KB)
+                  </label>
+                  <input
+                    type="file"
+                    accept="image/png,image/jpeg"
+                    onChange={handleSignatureFileChange}
+                    className="w-full rounded-lg border border-[#495057] bg-[#2B3035] px-2.5 py-1.5 text-xs text-slate-200"
+                  />
+                  {verSigDataUrl && (
+                    <div className="mt-1.5 inline-block rounded bg-white p-1.5">
+                      <img
+                        src={verSigDataUrl}
+                        alt="Preview TTD"
+                        className="h-10 object-contain"
+                      />
+                    </div>
+                  )}
+                </div>
+
+                <div className="sm:col-span-2 lg:col-span-3 flex justify-end">
+                  <button
+                    type="submit"
+                    disabled={savingVerifier}
+                    className="rounded-lg bg-[#7A9278] px-4 py-2 text-xs font-semibold text-white hover:bg-[#667D64] disabled:opacity-50"
+                  >
+                    {savingVerifier
+                      ? "Menyimpan..."
+                      : "Simpan Verifikator & Tanda Tangan"}
+                  </button>
+                </div>
+              </form>
+
+              {/* Daftar Verifikator Tersimpan */}
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+                {visibleVerifiers.map((v) => (
+                  <div
+                    key={v.id}
+                    className="flex items-center justify-between gap-3 rounded-lg border border-[#495057] bg-[#212529] p-3"
+                  >
+                    <div>
+                      <div className="text-[11px] font-semibold uppercase text-[#8BB3D6]">
+                        {v.scopeType === "global"
+                          ? "Global (Semua BUFN)"
+                          : v.scopeType === "bufn"
+                            ? `${v.bufn} (Semua Smelter)`
+                            : `${v.bufn} • ${v.smelter}`}
+                      </div>
+                      <div className="mt-0.5 text-sm font-bold text-[#F1F3F5]">
+                        {v.verifierName}
+                      </div>
+                      <div className="text-xs text-slate-400">
+                        {v.verifierTitle}
+                      </div>
+                      {v.signatureDataUrl ? (
+                        <div className="mt-1.5 inline-block rounded bg-white px-2 py-1">
+                          <img
+                            src={v.signatureDataUrl}
+                            alt="TTD"
+                            className="h-8 object-contain"
+                          />
+                        </div>
+                      ) : (
+                        <div className="mt-1 text-[11px] italic text-amber-400">
+                          Belum ada gambar TTD
+                        </div>
+                      )}
+                    </div>
+
+                    <button
+                      type="button"
+                      onClick={() => handleDeleteVerifier(v.id)}
+                      className="rounded border border-red-500/40 px-2 py-1 text-xs text-red-300 hover:bg-red-950/60"
+                    >
+                      Hapus
+                    </button>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
 
       {/* Panel Filter Lintas Wilayah & Kategori */}
       <div className="space-y-4 rounded-xl border border-[#495057] bg-[#2B3035] p-4">
@@ -429,7 +843,7 @@ export default function ReportsDashboard({
 
               <div>
                 <label className="mb-1 block text-xs font-medium text-slate-300">
-                  Status / Cari Nama
+                  Cari Nama / ID
                 </label>
                 <input
                   type="text"
@@ -443,7 +857,7 @@ export default function ReportsDashboard({
           )}
         </div>
 
-        {/* Bar Tab & Tombol Ekspor Excel + Batch PDF */}
+        {/* Bar Tab & Tombol Ekspor Excel + Batch PDF + Kirim Email 1-Klik */}
         <div className="flex flex-wrap items-center justify-between gap-3 border-t border-[#495057]/70 pt-3">
           <div className="flex flex-wrap items-center gap-2">
             <button
@@ -485,7 +899,7 @@ export default function ReportsDashboard({
             <button
               type="button"
               onClick={handleExportExcelCsv}
-              className="rounded-lg border border-[#7A9278] bg-[#7A9278]/20 px-3.5 py-2 text-xs font-semibold text-[#C3DEC0] transition hover:bg-[#7A9278]/30"
+              className="rounded-lg border border-[#7A9278] bg-[#7A9278]/20 px-3 py-2 text-xs font-semibold text-[#C3DEC0] transition hover:bg-[#7A9278]/30"
             >
               Ekspor Excel (.CSV)
             </button>
@@ -493,18 +907,34 @@ export default function ReportsDashboard({
             <button
               type="button"
               onClick={() => handleExportPdf(filteredRows, "monthly_slip")}
-              className="rounded-lg bg-[#5B7C99] px-3.5 py-2 text-xs font-semibold text-white transition hover:bg-[#45657F]"
+              className="rounded-lg bg-[#5B7C99] px-3 py-2 text-xs font-semibold text-white transition hover:bg-[#45657F]"
             >
-              Batch PDF Slip Bulanan ({filteredRows.length})
+              Batch PDF Bulanan ({filteredRows.length})
             </button>
 
             <button
               type="button"
               onClick={() => handleExportPdf(filteredRows, "yearly_report")}
-              className="rounded-lg bg-amber-600 px-3.5 py-2 text-xs font-semibold text-white transition hover:bg-amber-500"
+              className="rounded-lg bg-amber-600 px-3 py-2 text-xs font-semibold text-white transition hover:bg-amber-500"
             >
-              Batch PDF Tahunan {recap.year} ({filteredRows.length})
+              Batch PDF {recap.year} ({filteredRows.length})
             </button>
+
+            {canSendEmail && (
+              <button
+                type="button"
+                onClick={() =>
+                  setEmailConfirm({
+                    rows: filteredRows,
+                    mode:
+                      activeTab === "yearly" ? "yearly_report" : "monthly_slip",
+                  })
+                }
+                className="rounded-lg bg-emerald-600 px-3.5 py-2 text-xs font-semibold text-white transition hover:bg-emerald-500"
+              >
+                Kirim Semua ke Email ({filteredRows.length})
+              </button>
+            )}
           </div>
         </div>
       </div>
@@ -515,18 +945,17 @@ export default function ReportsDashboard({
           Memuat data rekapitulasi periode {period}...
         </div>
       ) : activeTab === "monthly" ? (
-        /* TAB 1: REKAP BULANAN & CETAK SLIP PDF SATUAN */
         <div className="overflow-x-auto rounded-xl border border-[#495057] bg-[#2B3035]">
           <table className="w-full border-collapse text-left text-sm">
             <thead>
               <tr className="border-b border-[#495057] bg-[#212529]/80 text-xs uppercase text-slate-400">
-                <th className="px-4 py-3">Personel & Jabatan</th>
+                <th className="px-4 py-3">Personel & Email</th>
                 <th className="px-4 py-3">Wilayah & Pola</th>
                 <th className="px-4 py-3">Status</th>
                 <th className="px-4 py-3 text-right">Skor {recap.period}</th>
                 <th className="px-4 py-3 text-center">Grade</th>
                 <th className="px-4 py-3 text-right">Rata2 {recap.year}</th>
-                <th className="px-4 py-3 text-right">Cetak Rapor PDF</th>
+                <th className="px-4 py-3 text-right">Aksi PDF, Catatan & Email</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-[#495057]/60">
@@ -538,10 +967,17 @@ export default function ReportsDashboard({
                       <span className="font-mono">{r.employeeId}</span> •{" "}
                       {r.jobTitle}
                     </div>
+                    <div className="mt-0.5 text-[11px] text-slate-400">
+                      {r.email || (
+                        <span className="italic text-amber-400/80">
+                          Email belum diisi
+                        </span>
+                      )}
+                    </div>
                   </td>
                   <td className="px-4 py-3">
-                    <div className="text-slate-200">
-                      {r.bufn} • {r.smelter}
+                    <div className="font-medium text-slate-200">
+                      {r.bufn} — {r.smelter}
                     </div>
                     <div className="mt-0.5 text-xs text-[#8BB3D6]">
                       {r.kpiCategoryLabel}
@@ -602,17 +1038,43 @@ export default function ReportsDashboard({
                       <button
                         type="button"
                         onClick={() => handleExportPdf([r], "monthly_slip")}
-                        className="rounded border border-[#5B7C99]/60 bg-[#5B7C99]/15 px-2.5 py-1 text-xs font-medium text-[#8BB3D6] hover:bg-[#5B7C99]/30"
+                        className="rounded border border-[#5B7C99]/60 bg-[#5B7C99]/15 px-2 py-1 text-xs font-medium text-[#8BB3D6] hover:bg-[#5B7C99]/30"
                       >
                         Slip PDF
                       </button>
                       <button
                         type="button"
                         onClick={() => handleExportPdf([r], "yearly_report")}
-                        className="rounded border border-amber-500/40 bg-amber-500/10 px-2.5 py-1 text-xs font-medium text-amber-300 hover:bg-amber-500/20"
+                        className="rounded border border-amber-500/40 bg-amber-500/10 px-2 py-1 text-xs font-medium text-amber-300 hover:bg-amber-500/20"
                       >
                         PDF {recap.year}
                       </button>
+                      {canFilterMulti && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setNoteModalRow(r);
+                            setYearlyNoteText(r.yearlySpvNote || "");
+                          }}
+                          className="rounded border border-[#495057] bg-[#212529] px-2 py-1 text-xs text-slate-200 hover:border-[#7A9278]"
+                        >
+                          Catatan SPV
+                        </button>
+                      )}
+                      {canSendEmail && (
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setEmailConfirm({
+                              rows: [r],
+                              mode: "monthly_slip",
+                            })
+                          }
+                          className="rounded border border-emerald-500/40 bg-emerald-500/15 px-2 py-1 text-xs font-medium text-emerald-300 hover:bg-emerald-500/25"
+                        >
+                          Kirim Email
+                        </button>
+                      )}
                     </div>
                   </td>
                 </tr>
@@ -632,7 +1094,7 @@ export default function ReportsDashboard({
           </table>
         </div>
       ) : (
-        /* TAB 2: MATRIKS HISTORI TAHUNAN 12 BULAN (JAN - DES) */
+        /* TAB 2: MATRIKS HISTORI TAHUNAN 12 BULAN */
         <div className="overflow-x-auto rounded-xl border border-[#495057] bg-[#2B3035]">
           <table className="w-full border-collapse text-left text-xs">
             <thead>
@@ -645,7 +1107,7 @@ export default function ReportsDashboard({
                 ))}
                 <th className="px-3 py-3 text-right">Rata2</th>
                 <th className="px-3 py-3 text-center">Grade</th>
-                <th className="px-3 py-3 text-right">PDF</th>
+                <th className="px-3 py-3 text-right">Aksi Tahunan</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-[#495057]/60">
@@ -654,7 +1116,7 @@ export default function ReportsDashboard({
                   <td className="px-3 py-2.5">
                     <div className="font-semibold text-[#F1F3F5]">{r.name}</div>
                     <div className="text-[11px] text-slate-400">
-                      {r.bufn} • {r.smelter} ({r.kpiCategoryLabel})
+                      {r.bufn} — {r.smelter} ({r.kpiCategoryLabel})
                     </div>
                   </td>
                   {r.yearlyHistory.map((h) => (
@@ -690,18 +1152,143 @@ export default function ReportsDashboard({
                     )}
                   </td>
                   <td className="px-3 py-2.5 text-right">
-                    <button
-                      type="button"
-                      onClick={() => handleExportPdf([r], "yearly_report")}
-                      className="rounded border border-amber-500/40 bg-amber-500/10 px-2 py-1 text-[11px] font-medium text-amber-300 hover:bg-amber-500/20"
-                    >
-                      PDF {recap.year}
-                    </button>
+                    <div className="inline-flex gap-1.5">
+                      {canFilterMulti && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setNoteModalRow(r);
+                            setYearlyNoteText(r.yearlySpvNote || "");
+                          }}
+                          className="rounded border border-[#495057] bg-[#212529] px-2 py-1 text-[11px] text-slate-200 hover:border-[#7A9278]"
+                        >
+                          Catatan SPV
+                        </button>
+                      )}
+                      <button
+                        type="button"
+                        onClick={() => handleExportPdf([r], "yearly_report")}
+                        className="rounded border border-amber-500/40 bg-amber-500/10 px-2 py-1 text-[11px] font-medium text-amber-300 hover:bg-amber-500/20"
+                      >
+                        PDF {recap.year}
+                      </button>
+                      {canSendEmail && (
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setEmailConfirm({
+                              rows: [r],
+                              mode: "yearly_report",
+                            })
+                          }
+                          className="rounded border border-emerald-500/40 bg-emerald-500/15 px-2 py-1 text-[11px] font-medium text-emerald-300 hover:bg-emerald-500/25"
+                        >
+                          Email
+                        </button>
+                      )}
+                    </div>
                   </td>
                 </tr>
               ))}
             </tbody>
           </table>
+        </div>
+      )}
+
+      {/* Modal Catatan Evaluasi Tahunan SPV Area */}
+      {noteModalRow && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 p-4">
+          <form
+            onSubmit={handleSaveYearlySpvNote}
+            className="w-full max-w-lg space-y-4 rounded-xl border border-[#495057] bg-[#2B3035] p-6 shadow-2xl"
+          >
+            <div>
+              <h3 className="text-base font-bold text-[#F1F3F5]">
+                Catatan Evaluasi Tahunan SPV ({recap.year})
+              </h3>
+              <p className="mt-0.5 text-xs text-slate-400">
+                Personel: <strong className="text-slate-200">{noteModalRow.name}</strong> ({noteModalRow.bufn} — {noteModalRow.smelter})
+              </p>
+            </div>
+
+            <div>
+              <label className="mb-1 block text-xs font-medium text-slate-300">
+                Isi Evaluasi Tahunan Supervisor Area
+              </label>
+              <textarea
+                rows={4}
+                required
+                placeholder="Tuliskan catatan evaluasi kinerja tahunan untuk personel ini..."
+                value={yearlyNoteText}
+                onChange={(e) => setYearlyNoteText(e.target.value)}
+                className="w-full rounded-lg border border-[#495057] bg-[#212529] p-3 text-sm text-[#F1F3F5] placeholder-slate-500"
+              />
+            </div>
+
+            <div className="flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setNoteModalRow(null)}
+                className="rounded-lg border border-[#495057] bg-[#212529] px-4 py-2 text-xs text-slate-300"
+              >
+                Batal
+              </button>
+              <button
+                type="submit"
+                disabled={savingNote}
+                className="rounded-lg bg-[#7A9278] px-4 py-2 text-xs font-semibold text-white hover:bg-[#667D64] disabled:opacity-50"
+              >
+                {savingNote ? "Menyimpan..." : "Simpan Catatan Tahunan"}
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
+
+      {/* Modal Konfirmasi Pengiriman Email 1-Klik */}
+      {emailConfirm && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 p-4 backdrop-blur-xs">
+          <div className="w-full max-w-md overflow-hidden rounded-xl border border-[#495057] bg-[#2B3035] shadow-2xl">
+            <div className="p-5 space-y-2">
+              <h3 className="text-base font-bold text-[#F1F3F5]">
+                Konfirmasi Pengiriman Slip KPI via Email
+              </h3>
+              <p className="text-xs leading-relaxed text-slate-300">
+                Sistem akan mengirimkan{" "}
+                <strong>
+                  {emailConfirm.mode === "yearly_report"
+                    ? `Rapor Tahunan ${recap.year}`
+                    : `Slip KPI Bulanan (${recap.period})`}
+                </strong>{" "}
+                secara otomatis ke alamat email{" "}
+                <strong>{emailConfirm.rows.length} personel</strong> terpilih.
+              </p>
+              <p className="text-[11px] text-amber-300">
+                * Personel yang belum memiliki alamat email akan dilewati secara otomatis.
+              </p>
+            </div>
+
+            <div className="flex items-center justify-end gap-2.5 border-t border-[#495057]/70 bg-[#212529]/80 px-5 py-3.5">
+              <button
+                type="button"
+                disabled={sendingEmail}
+                onClick={() => setEmailConfirm(null)}
+                className="rounded-lg border border-[#495057] bg-[#2B3035] px-4 py-2 text-xs font-semibold text-slate-200"
+              >
+                Batal
+              </button>
+              <button
+                type="button"
+                disabled={sendingEmail}
+                onClick={executeSendEmail}
+                className="rounded-lg bg-emerald-600 px-4 py-2 text-xs font-semibold text-white hover:bg-emerald-500 disabled:opacity-50"
+              >
+                {sendingEmail
+                  ? "Mengirim Email..."
+                  : `Kirim Sekarang (${emailConfirm.rows.length})`}
+              </button>
+            </div>
+          </div>
         </div>
       )}
     </div>

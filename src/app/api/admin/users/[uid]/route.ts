@@ -31,29 +31,29 @@ export async function PATCH(
 
   try {
     const { uid } = await context.params;
-    const existingDoc = await firestoreGetDoc("users", uid);
-    if (!existingDoc?.fields) {
+    const doc = await firestoreGetDoc("users", uid);
+    if (!doc?.fields) {
       return NextResponse.json(
-        { berhasil: false, pesan: "Pengguna tidak ditemukan." },
+        { berhasil: false, pesan: "Akun pengguna tidak ditemukan." },
         { status: 404 }
       );
     }
 
-    const existingFields = existingDoc.fields;
-    const targetRole = (existingFields.role?.stringValue ||
-      "safety_officer") as UserRole;
-    const targetBufn = existingFields.bufn?.stringValue || "BUFN 1";
+    const f = doc.fields;
+    const existingBufn = f.bufn?.stringValue || "BUFN 1";
+    const existingRole = (f.role?.stringValue || "safety_officer") as UserRole;
 
-    if (currentUser.role === "admin") {
-      if (targetRole !== "safety_officer" || targetBufn !== currentUser.bufn) {
-        return NextResponse.json(
-          {
-            berhasil: false,
-            pesan: `Anda hanya dapat mengelola anggota di wilayah ${currentUser.bufn}.`,
-          },
-          { status: 403 }
-        );
-      }
+    if (
+      currentUser.role === "admin" &&
+      (existingBufn !== currentUser.bufn || existingRole === "super_admin")
+    ) {
+      return NextResponse.json(
+        {
+          berhasil: false,
+          pesan: `Anda hanya dapat mengelola akun di wilayah ${currentUser.bufn}.`,
+        },
+        { status: 403 }
+      );
     }
 
     const body = await request.json();
@@ -67,107 +67,104 @@ export async function PATCH(
         stringValue: body.employeeId.trim().toUpperCase(),
       };
     }
+    if (typeof body.email === "string") {
+      updates.email = { stringValue: body.email.trim().toLowerCase() };
+    }
 
-    let nextRole = targetRole;
-    if (
+    const nextRole: UserRole =
       currentUser.role === "super_admin" &&
-      (body.role === "safety_officer" ||
+      (body.role === "super_admin" ||
         body.role === "admin" ||
-        body.role === "super_admin")
-    ) {
-      nextRole = body.role;
+        body.role === "safety_officer")
+        ? body.role
+        : existingRole;
+
+    if (currentUser.role === "super_admin" && body.role) {
       updates.role = { stringValue: nextRole };
     }
 
-    const currentJob = (existingFields.jobTitle?.stringValue ||
+    const existingJob = (f.jobTitle?.stringValue ||
       "Safety Officer") as JobTitle;
     const nextJob: JobTitle =
       typeof body.jobTitle === "string" &&
       JOB_TITLES.includes(body.jobTitle as JobTitle)
         ? (body.jobTitle as JobTitle)
-        : currentJob;
-    updates.jobTitle = { stringValue: nextJob };
+        : existingJob;
 
-    const currentCat = (existingFields.kpiCategory?.stringValue ||
-      "shift_3g2s") as KpiCategory;
-    let nextCat: KpiCategory =
-      typeof body.kpiCategory === "string" &&
-      KPI_CATEGORIES.includes(body.kpiCategory as KpiCategory)
-        ? (body.kpiCategory as KpiCategory)
-        : currentCat;
-
-    if (nextJob === "Wakil Supervisor") {
-      nextCat = "wakil_spv";
-    } else if (nextCat === "wakil_spv") {
-      nextCat = "shift_3g2s";
+    if (body.jobTitle) {
+      updates.jobTitle = { stringValue: nextJob };
     }
+
+    const existingCat = (f.kpiCategory?.stringValue ||
+      "shift_3g2s") as KpiCategory;
+    const nextCat: KpiCategory =
+      nextJob === "Wakil Supervisor"
+        ? "wakil_spv"
+        : typeof body.kpiCategory === "string" &&
+            KPI_CATEGORIES.includes(body.kpiCategory as KpiCategory) &&
+            body.kpiCategory !== "wakil_spv"
+          ? (body.kpiCategory as KpiCategory)
+          : existingCat === "wakil_spv"
+            ? "shift_3g2s"
+            : existingCat;
+
     updates.kpiCategory = { stringValue: nextCat };
 
-    let nextBufn = targetBufn;
-    if (
-      currentUser.role === "super_admin" &&
-      typeof body.bufn === "string" &&
-      body.bufn.trim()
-    ) {
-      nextBufn = body.bufn.trim();
-    } else if (currentUser.role === "admin") {
-      nextBufn = currentUser.bufn;
-    }
+    const nextBufn =
+      nextRole === "super_admin"
+        ? "ALL"
+        : currentUser.role === "admin"
+          ? currentUser.bufn
+          : typeof body.bufn === "string" && body.bufn.trim()
+            ? body.bufn.trim()
+            : existingBufn;
 
-    let nextSmelter = existingFields.smelter?.stringValue || "-";
-    if (typeof body.smelter === "string" && body.smelter.trim()) {
-      nextSmelter = body.smelter.trim();
-    }
-
-    if (nextRole === "super_admin") {
-      nextBufn = "ALL";
-      nextSmelter = "ALL";
-    } else if (nextRole === "admin") {
-      nextSmelter = "ALL";
-    }
+    const existingSmelter = f.smelter?.stringValue || "-";
+    const nextSmelter =
+      nextRole === "super_admin" || nextRole === "admin"
+        ? "ALL"
+        : typeof body.smelter === "string" && body.smelter.trim()
+          ? body.smelter.trim()
+          : existingSmelter;
 
     updates.bufn = { stringValue: nextBufn };
     updates.smelter = { stringValue: nextSmelter };
-    updates.unit = {
-      stringValue:
-        nextRole === "super_admin"
-          ? "Comprehensive HSE"
-          : nextRole === "admin"
-            ? `Admin ${nextBufn}`
-            : `${nextBufn} - ${nextSmelter}`,
-    };
+
+    const unitLabel =
+      nextRole === "super_admin"
+        ? "Comprehensive HSE"
+        : nextRole === "admin"
+          ? `${nextBufn} (Semua Smelter)`
+          : `${nextBufn} - ${nextSmelter}`;
+    updates.unit = { stringValue: unitLabel };
 
     if (typeof body.isActive === "boolean") {
       updates.isActive = { booleanValue: body.isActive };
     }
+
     if (typeof body.newPassword === "string" && body.newPassword.trim()) {
-      if (body.newPassword.trim().length < 4) {
+      const pw = body.newPassword.trim();
+      if (pw.length < 4) {
         return NextResponse.json(
           { berhasil: false, pesan: "Password baru minimal 4 karakter." },
           { status: 400 }
         );
       }
-      updates.passwordHash = {
-        stringValue: hashPassword(body.newPassword.trim()),
-      };
+      updates.passwordHash = { stringValue: hashPassword(pw) };
     }
 
-    if (Object.keys(updates).length > 0) {
-      await firestoreSetDoc("users", uid, updates);
-    }
+    await firestoreSetDoc("users", uid, updates);
 
     return NextResponse.json({
       berhasil: true,
-      pesan: "Data personel berhasil diperbarui.",
+      pesan: "Data akun & penempatan lokasi berhasil diperbarui.",
     });
   } catch (error) {
     return NextResponse.json(
       {
         berhasil: false,
         pesan:
-          error instanceof Error
-            ? error.message
-            : "Gagal memperbarui data pengguna.",
+          error instanceof Error ? error.message : "Gagal memperbarui akun.",
       },
       { status: 500 }
     );
@@ -201,26 +198,27 @@ export async function DELETE(
       );
     }
 
-    const existingDoc = await firestoreGetDoc("users", uid);
-    if (!existingDoc?.fields) {
+    const doc = await firestoreGetDoc("users", uid);
+    if (!doc?.fields) {
       return NextResponse.json(
-        { berhasil: false, pesan: "Pengguna tidak ditemukan." },
+        { berhasil: false, pesan: "Akun tidak ditemukan." },
         { status: 404 }
       );
     }
 
-    if (currentUser.role === "admin") {
-      const targetRole = existingDoc.fields.role?.stringValue || "";
-      const targetBufn = existingDoc.fields.bufn?.stringValue || "";
-      if (targetRole !== "safety_officer" || targetBufn !== currentUser.bufn) {
-        return NextResponse.json(
-          {
-            berhasil: false,
-            pesan: `Anda hanya dapat menghapus anggota di wilayah ${currentUser.bufn}.`,
-          },
-          { status: 403 }
-        );
-      }
+    const existingBufn = doc.fields.bufn?.stringValue || "";
+    const existingRole = doc.fields.role?.stringValue || "";
+    if (
+      currentUser.role === "admin" &&
+      (existingBufn !== currentUser.bufn || existingRole === "super_admin")
+    ) {
+      return NextResponse.json(
+        {
+          berhasil: false,
+          pesan: `Anda hanya dapat menghapus akun di wilayah ${currentUser.bufn}.`,
+        },
+        { status: 403 }
+      );
     }
 
     await firestoreDeleteDoc("users", uid);
@@ -233,9 +231,7 @@ export async function DELETE(
       {
         berhasil: false,
         pesan:
-          error instanceof Error
-            ? error.message
-            : "Gagal menghapus pengguna.",
+          error instanceof Error ? error.message : "Gagal menghapus akun.",
       },
       { status: 500 }
     );

@@ -12,6 +12,12 @@ import {
   type TeamMemberKpiSummary,
 } from "@/lib/kpi-engine";
 import {
+  getAreaVerifiers,
+  getYearlySpvNotesMap,
+  resolveVerifierForEmployee,
+  type AreaVerifierConfig,
+} from "@/lib/verifiers";
+import {
   JOB_TITLES,
   KPI_CATEGORIES,
   KPI_CATEGORY_LABELS,
@@ -25,9 +31,9 @@ import type {
 } from "@/app/api/kpi-cards/route";
 
 export interface MonthlyHistoryPoint {
-  month: string; // "01" .. "12"
-  period: string; // "YYYY-01" .. "YYYY-12"
-  label: string; // "Jan", "Feb", dst.
+  month: string;
+  period: string;
+  label: string;
   hasData: boolean;
   status: KpiCardStatus | "unassessed";
   totalScore: number;
@@ -40,11 +46,17 @@ export interface PersonRecapRow {
   uid: string;
   employeeId: string;
   name: string;
+  email: string;
   jobTitle: JobTitle;
   kpiCategory: KpiCategory;
   kpiCategoryLabel: string;
   bufn: string;
   smelter: string;
+
+  // Pejabat Verifikator & Tanda Tangan Digital (Nama saja tanpa ID)
+  verifierName: string;
+  verifierTitle: string;
+  verifierSignatureDataUrl: string;
 
   // Periode bulan yang dipilih
   period: string;
@@ -58,7 +70,6 @@ export interface PersonRecapRow {
   gateTriggered: boolean;
   failedCoreCodes: string[];
   adminFeedback: string;
-  assessedBy: string;
   updatedAt: string;
   entries: KpiEntryItem[];
   supervisorBreakdown?: SupervisorBreakdown;
@@ -69,12 +80,15 @@ export interface PersonRecapRow {
   assessedMonthsCount: number;
   yearlyAverageScore: number;
   yearlyGrade: GradeThreshold;
+  yearlySpvNote: string;
+  yearlySpvNoteAuthor: string;
 }
 
 interface ParsedOfficer {
   uid: string;
   employeeId: string;
   name: string;
+  email: string;
   role: UserRole;
   jobTitle: JobTitle;
   kpiCategory: KpiCategory;
@@ -97,6 +111,12 @@ const MONTH_SHORT_NAMES = [
   "Nov",
   "Des",
 ];
+
+function stripIdFromAssessor(raw: string): string {
+  if (!raw) return "";
+  // Hilangkan pola "(IWIP-XXXX)" jika berasal dari assessedBy lama
+  return raw.replace(/\s*\([^)]*\)\s*$/, "").trim();
+}
 
 function parseUserRow(
   uid: string,
@@ -122,6 +142,7 @@ function parseUserRow(
     uid,
     employeeId: f.employeeId?.stringValue || "",
     name: f.name?.stringValue || "",
+    email: f.email?.stringValue || "",
     role,
     jobTitle,
     kpiCategory,
@@ -144,16 +165,17 @@ interface ParsedRawCard {
 }
 
 export async function buildFullKpiRecap(options: {
-  period: string; // YYYY-MM
-  restrictBufn?: string; // Diisi jika Admin BUFN
-  restrictArea?: { bufn: string; smelter: string }; // Diisi jika Wakil SPV
-  restrictUid?: string; // Diisi jika Safety Officer biasa
+  period: string;
+  restrictBufn?: string;
+  restrictArea?: { bufn: string; smelter: string };
+  restrictUid?: string;
 }): Promise<{
   period: string;
   year: string;
   periodDateRange: string;
   policy: ScoringPolicy;
   grades: GradeThreshold[];
+  verifiers: AreaVerifierConfig[];
   rows: PersonRecapRow[];
 }> {
   const period = /^\d{4}-\d{2}$/.test(options.period)
@@ -161,14 +183,22 @@ export async function buildFullKpiRecap(options: {
     : `${new Date().getFullYear()}-${String(new Date().getMonth() + 1).padStart(2, "0")}`;
   const year = period.slice(0, 4);
 
-  const [userDocs, cardDocs, defaultGrades, defaultPolicy] = await Promise.all([
+  const [
+    userDocs,
+    cardDocs,
+    defaultGrades,
+    defaultPolicy,
+    verifiers,
+    yearlyNotesMap,
+  ] = await Promise.all([
     firestoreListCollection("users"),
     firestoreListCollection("kpi_cards"),
     getKpiGrades(),
     getScoringPolicy(),
+    getAreaVerifiers(),
+    getYearlySpvNotesMap(year),
   ]);
 
-  // 1. Parse semua personel aktif (role safety_officer mencakup Junior, SO, Senior SO, Wakil SPV)
   const allOfficers: ParsedOfficer[] = (
     userDocs as Array<{
       name?: string;
@@ -180,9 +210,11 @@ export async function buildFullKpiRecap(options: {
       const uid = f.uid?.stringValue || doc.name?.split("/").pop() || "";
       return parseUserRow(uid, f);
     })
-    .filter((u: ParsedOfficer) => Boolean(u.uid) && u.isActive && u.role === "safety_officer");
+    .filter(
+      (u: ParsedOfficer) =>
+        Boolean(u.uid) && u.isActive && u.role === "safety_officer"
+    );
 
-  // 2. Parse semua dokumen kartu KPI untuk tahun berjalan (YYYY-01 s/d YYYY-12)
   const cardsByUidPeriod: Record<string, ParsedRawCard> = {};
   for (const doc of cardDocs as Array<{
     fields?: Record<string, { stringValue?: string }>;
@@ -254,7 +286,6 @@ export async function buildFullKpiRecap(options: {
     };
   }
 
-  // Helper untuk mengevaluasi satu personel pada 1 bulan tertentu
   function evaluatePersonMonth(person: ParsedOfficer, targetPeriod: string) {
     const rawCard = cardsByUidPeriod[`${person.uid}_${targetPeriod}`];
     const grades = rawCard?.gradesScale || defaultGrades;
@@ -298,7 +329,6 @@ export async function buildFullKpiRecap(options: {
       };
     }
 
-    // Khusus Wakil Supervisor: gabungkan nilai pribadi + performa anggota di Smelter-nya
     const peers: ParsedOfficer[] = allOfficers.filter(
       (m: ParsedOfficer) =>
         m.jobTitle !== "Wakil Supervisor" &&
@@ -385,7 +415,6 @@ export async function buildFullKpiRecap(options: {
     };
   }
 
-  // 3. Filter personel sesuai hak akses pemanggil
   const visibleOfficers: ParsedOfficer[] = allOfficers.filter(
     (u: ParsedOfficer) => {
       if (options.restrictUid) return u.uid === options.restrictUid;
@@ -402,7 +431,6 @@ export async function buildFullKpiRecap(options: {
     }
   );
 
-  // 4. Susun baris rekap lengkap beserta histori 12 bulan dalam 1 tahun berjalan
   const rows: PersonRecapRow[] = visibleOfficers
     .map((person: ParsedOfficer) => {
       const currentEval = evaluatePersonMonth(person, period);
@@ -441,7 +469,6 @@ export async function buildFullKpiRecap(options: {
             ) / 100
           : 0;
 
-      // Tentukan grade rata-rata tahunan berdasarkan skala grade default
       const sortedGrades = [...defaultGrades].sort(
         (a, b) => b.minScore - a.minScore
       );
@@ -449,15 +476,38 @@ export async function buildFullKpiRecap(options: {
         sortedGrades.find((g) => yearlyAverageScore >= g.minScore) ||
         sortedGrades[sortedGrades.length - 1];
 
+      // Resolusi Pejabat Verifikator & TTD Digital untuk area karyawan ini
+      const matchedVerifier = resolveVerifierForEmployee(
+        verifiers,
+        person.bufn,
+        person.smelter
+      );
+      const fallbackName = stripIdFromAssessor(currentEval.assessedBy);
+      const verifierName =
+        matchedVerifier?.verifierName ||
+        fallbackName ||
+        "Comprehensive HSE Dept.";
+      const verifierTitle = matchedVerifier?.verifierTitle || "";
+      const verifierSignatureDataUrl =
+        matchedVerifier?.signatureDataUrl || "";
+
+      // Catatan Evaluasi Tahunan khusus SPV area
+      const yearlyNoteEntry = yearlyNotesMap[person.uid];
+
       return {
         uid: person.uid,
         employeeId: person.employeeId,
         name: person.name,
+        email: person.email,
         jobTitle: person.jobTitle,
         kpiCategory: person.kpiCategory,
         kpiCategoryLabel: KPI_CATEGORY_LABELS[person.kpiCategory],
         bufn: person.bufn,
         smelter: person.smelter,
+
+        verifierName,
+        verifierTitle,
+        verifierSignatureDataUrl,
 
         period,
         periodDateRange: formatPeriodDateRange(period, defaultPolicy),
@@ -470,7 +520,6 @@ export async function buildFullKpiRecap(options: {
         gateTriggered: currentEval.gateTriggered,
         failedCoreCodes: currentEval.failedCoreCodes,
         adminFeedback: currentEval.adminFeedback,
-        assessedBy: currentEval.assessedBy,
         updatedAt: currentEval.updatedAt,
         entries: currentEval.entries,
         supervisorBreakdown: currentEval.supervisorBreakdown,
@@ -480,6 +529,8 @@ export async function buildFullKpiRecap(options: {
         assessedMonthsCount,
         yearlyAverageScore,
         yearlyGrade,
+        yearlySpvNote: yearlyNoteEntry?.note || "",
+        yearlySpvNoteAuthor: yearlyNoteEntry?.authorName || "",
       };
     })
     .sort(
@@ -495,6 +546,7 @@ export async function buildFullKpiRecap(options: {
     periodDateRange: formatPeriodDateRange(period, defaultPolicy),
     policy: defaultPolicy,
     grades: defaultGrades,
+    verifiers,
     rows,
   };
 }

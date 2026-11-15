@@ -17,6 +17,7 @@ export interface ManagedUser {
   uid: string;
   employeeId: string;
   name: string;
+  email: string;
   role: UserRole;
   jobTitle: JobTitle;
   kpiCategory: KpiCategory;
@@ -24,14 +25,12 @@ export interface ManagedUser {
   smelter: string;
   unit: string;
   isActive: boolean;
+  createdAt: string;
 }
 
 export async function GET() {
-  const currentUser = await getCurrentUser();
-  if (
-    !currentUser ||
-    (currentUser.role !== "admin" && currentUser.role !== "super_admin")
-  ) {
+  const user = await getCurrentUser();
+  if (!user || (user.role !== "admin" && user.role !== "super_admin")) {
     return NextResponse.json(
       { berhasil: false, pesan: "Akses ditolak." },
       { status: 403 }
@@ -40,69 +39,68 @@ export async function GET() {
 
   try {
     const docs = await firestoreListCollection("users");
-    const allUsers: ManagedUser[] = docs.map(
-      (doc: {
-        name?: string;
-        fields?: Record<
-          string,
-          { stringValue?: string; booleanValue?: boolean }
-        >;
-      }) => {
-        const f = doc.fields || {};
-        const fallbackUid = doc.name?.split("/").pop() || "";
-        const role = (f.role?.stringValue || "safety_officer") as UserRole;
-        const bufn =
-          f.bufn?.stringValue || (role === "super_admin" ? "ALL" : "BUFN 1");
-        const smelter = f.smelter?.stringValue || "-";
+    const users: ManagedUser[] = docs
+      .map(
+        (doc: {
+          name?: string;
+          fields?: Record<
+            string,
+            { stringValue?: string; booleanValue?: boolean }
+          >;
+        }) => {
+          const f = doc.fields || {};
+          const uid = f.uid?.stringValue || doc.name?.split("/").pop() || "";
+          const role = (f.role?.stringValue || "safety_officer") as UserRole;
+          const bufn =
+            f.bufn?.stringValue || (role === "super_admin" ? "ALL" : "BUFN 1");
+          const smelter = f.smelter?.stringValue || "-";
+          const rawJob = f.jobTitle?.stringValue as JobTitle;
+          const jobTitle: JobTitle = JOB_TITLES.includes(rawJob)
+            ? rawJob
+            : "Safety Officer";
 
-        const rawJob = f.jobTitle?.stringValue as JobTitle;
-        const jobTitle: JobTitle = JOB_TITLES.includes(rawJob)
-          ? rawJob
-          : "Safety Officer";
+          const rawCat = f.kpiCategory?.stringValue as KpiCategory;
+          const kpiCategory: KpiCategory =
+            jobTitle === "Wakil Supervisor"
+              ? "wakil_spv"
+              : KPI_CATEGORIES.includes(rawCat) && rawCat !== "wakil_spv"
+                ? rawCat
+                : "shift_3g2s";
 
-        const rawCat = f.kpiCategory?.stringValue as KpiCategory;
-        const kpiCategory: KpiCategory =
-          jobTitle === "Wakil Supervisor"
-            ? "wakil_spv"
-            : KPI_CATEGORIES.includes(rawCat)
-              ? rawCat
-              : "shift_3g2s";
+          return {
+            uid,
+            employeeId: f.employeeId?.stringValue || "",
+            name: f.name?.stringValue || "",
+            email: f.email?.stringValue || "",
+            role,
+            jobTitle,
+            kpiCategory,
+            bufn,
+            smelter,
+            unit:
+              f.unit?.stringValue ||
+              (bufn === "ALL" ? "Comprehensive HSE" : `${bufn} - ${smelter}`),
+            isActive: f.isActive?.booleanValue ?? true,
+            createdAt: f.createdAt?.stringValue || "",
+          };
+        }
+      )
+      .filter((u: ManagedUser) => {
+        if (!u.uid || !u.employeeId) return false;
+        if (user.role === "admin") {
+          return u.bufn === user.bufn && u.role !== "super_admin";
+        }
+        return true;
+      })
+      .sort((a: ManagedUser, b: ManagedUser) => a.name.localeCompare(b.name));
 
-        return {
-          uid: f.uid?.stringValue || fallbackUid,
-          employeeId: f.employeeId?.stringValue || "",
-          name: f.name?.stringValue || "",
-          role,
-          jobTitle,
-          kpiCategory,
-          bufn,
-          smelter,
-          unit:
-            f.unit?.stringValue ||
-            (bufn === "ALL" ? "Comprehensive HSE" : `${bufn} - ${smelter}`),
-          isActive: f.isActive?.booleanValue ?? true,
-        };
-      }
-    );
-
-    const visibleUsers =
-      currentUser.role === "super_admin"
-        ? allUsers
-        : allUsers.filter(
-            (u) => u.role === "safety_officer" && u.bufn === currentUser.bufn
-          );
-
-    visibleUsers.sort((a, b) => a.name.localeCompare(b.name));
-
-    return NextResponse.json({ berhasil: true, users: visibleUsers });
+    return NextResponse.json({ berhasil: true, users });
   } catch (error) {
     return NextResponse.json(
       {
         berhasil: false,
         pesan:
-          error instanceof Error
-            ? error.message
-            : "Gagal memuat daftar pengguna.",
+          error instanceof Error ? error.message : "Gagal memuat daftar akun.",
       },
       { status: 500 }
     );
@@ -110,11 +108,8 @@ export async function GET() {
 }
 
 export async function POST(request: Request) {
-  const currentUser = await getCurrentUser();
-  if (
-    !currentUser ||
-    (currentUser.role !== "admin" && currentUser.role !== "super_admin")
-  ) {
+  const user = await getCurrentUser();
+  if (!user || (user.role !== "admin" && user.role !== "super_admin")) {
     return NextResponse.json(
       { berhasil: false, pesan: "Akses ditolak." },
       { status: 403 }
@@ -125,23 +120,28 @@ export async function POST(request: Request) {
     const body = await request.json();
     const employeeId = String(body.employeeId || "").trim().toUpperCase();
     const name = String(body.name || "").trim();
+    const email = String(body.email || "").trim().toLowerCase();
     const password = String(body.password || "").trim();
 
-    const requestedRole = String(body.role || "safety_officer") as UserRole;
+    const requestedRole = String(
+      body.role || "safety_officer"
+    ).trim() as UserRole;
     const role: UserRole =
-      currentUser.role === "super_admin" &&
-      (requestedRole === "admin" ||
-        requestedRole === "super_admin" ||
+      user.role === "super_admin" &&
+      (requestedRole === "super_admin" ||
+        requestedRole === "admin" ||
         requestedRole === "safety_officer")
         ? requestedRole
         : "safety_officer";
 
-    const rawJob = String(body.jobTitle || "Safety Officer") as JobTitle;
+    const rawJob = String(body.jobTitle || "Safety Officer").trim() as JobTitle;
     const jobTitle: JobTitle = JOB_TITLES.includes(rawJob)
       ? rawJob
       : "Safety Officer";
 
-    const rawCat = String(body.kpiCategory || "shift_3g2s") as KpiCategory;
+    const rawCat = String(
+      body.kpiCategory || "shift_3g2s"
+    ).trim() as KpiCategory;
     const kpiCategory: KpiCategory =
       jobTitle === "Wakil Supervisor"
         ? "wakil_spv"
@@ -149,19 +149,19 @@ export async function POST(request: Request) {
           ? rawCat
           : "shift_3g2s";
 
-    let bufn = String(body.bufn || "BUFN 1").trim();
-    let smelter = String(body.smelter || "").trim();
+    const bufn =
+      role === "super_admin"
+        ? "ALL"
+        : user.role === "admin"
+          ? user.bufn
+          : String(body.bufn || "BUFN 1").trim();
 
-    if (currentUser.role === "admin") {
-      bufn = currentUser.bufn;
-    }
-
-    if (role === "super_admin") {
-      bufn = "ALL";
-      smelter = "ALL";
-    } else if (role === "admin") {
-      smelter = "ALL";
-    }
+    const smelter =
+      role === "super_admin"
+        ? "ALL"
+        : role === "admin"
+          ? "ALL"
+          : String(body.smelter || "").trim() || "-";
 
     if (!employeeId || !name || password.length < 4) {
       return NextResponse.json(
@@ -174,21 +174,12 @@ export async function POST(request: Request) {
       );
     }
 
-    if (role === "safety_officer" && (!bufn || !smelter)) {
-      return NextResponse.json(
-        {
-          berhasil: false,
-          pesan: "BUFN dan Lokasi Smelter wajib dipilih.",
-        },
-        { status: 400 }
-      );
-    }
-
-    const docs = await firestoreListCollection("users");
-    const duplicate = docs.some(
-      (d: { fields?: Record<string, { stringValue?: string }> }) =>
-        (d.fields?.employeeId?.stringValue || "").toUpperCase() === employeeId
+    const existingDocs = await firestoreListCollection("users");
+    const duplicate = existingDocs.some(
+      (doc: { fields?: Record<string, { stringValue?: string }> }) =>
+        (doc.fields?.employeeId?.stringValue || "").toUpperCase() === employeeId
     );
+
     if (duplicate) {
       return NextResponse.json(
         {
@@ -204,13 +195,14 @@ export async function POST(request: Request) {
       role === "super_admin"
         ? "Comprehensive HSE"
         : role === "admin"
-          ? `Admin ${bufn}`
+          ? `${bufn} (Semua Smelter)`
           : `${bufn} - ${smelter}`;
 
     await firestoreSetDoc("users", uid, {
       uid: { stringValue: uid },
       employeeId: { stringValue: employeeId },
       name: { stringValue: name },
+      email: { stringValue: email },
       role: { stringValue: role },
       jobTitle: { stringValue: jobTitle },
       kpiCategory: { stringValue: kpiCategory },
@@ -219,18 +211,19 @@ export async function POST(request: Request) {
       unit: { stringValue: unitLabel },
       passwordHash: { stringValue: hashPassword(password) },
       isActive: { booleanValue: true },
+      createdAt: { stringValue: new Date().toISOString() },
     });
 
     return NextResponse.json({
       berhasil: true,
-      pesan: `Akun ${name} (${jobTitle} • ${bufn}${smelter !== "ALL" ? ` - ${smelter}` : ""}) berhasil ditambahkan.`,
+      pesan: `Akun ${name} (${employeeId}) berhasil dibuat.`,
     });
   } catch (error) {
     return NextResponse.json(
       {
         berhasil: false,
         pesan:
-          error instanceof Error ? error.message : "Gagal menambah pengguna.",
+          error instanceof Error ? error.message : "Gagal membuat akun baru.",
       },
       { status: 500 }
     );
