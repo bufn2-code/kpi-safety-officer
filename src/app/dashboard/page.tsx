@@ -54,7 +54,7 @@ async function KontenDashboard() {
       <header className="flex flex-wrap items-center justify-between gap-4 rounded-xl border border-[#495057] bg-[#2B3035] p-5">
         <div>
           <p className="text-xs font-medium uppercase tracking-wider text-[#8BB3D6]">
-            Sistem KPI HSE • BUFN
+            Sistem KPI HSE • PT IWIP
           </p>
           <h1 className="mt-1 text-xl font-bold text-[#F1F3F5]">
             Selamat datang, {user.name}
@@ -70,7 +70,7 @@ async function KontenDashboard() {
         <LogoutButton />
       </header>
 
-      <section className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
+      <section className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-2">
         <Link
           href="/kpi-card"
           className="group rounded-xl border border-[#495057] bg-[#2B3035] p-5 transition hover:border-[#7A9278]"
@@ -96,6 +96,25 @@ async function KontenDashboard() {
           </p>
         </Link>
 
+        <Link
+          href="/reports"
+          className="group rounded-xl border border-[#495057] bg-[#2B3035] p-5 transition hover:border-[#7A9278]"
+        >
+          <span className="inline-block rounded bg-amber-500/20 px-2.5 py-1 text-xs font-semibold text-amber-300">
+            Laporan, Excel & PDF Slip KPI
+          </span>
+          <h2 className="mt-3 text-lg font-bold text-[#F1F3F5] group-hover:text-amber-300">
+            Rekapitulasi & Cetak Slip PDF
+          </h2>
+          <p className="mt-1 text-sm text-slate-300">
+            {isAdminOrAbove
+              ? "Rekap lintas BUFN & Smelter, ekspor Excel/CSV, serta cetak Slip KPI PDF satuan maupun batch (per Smelter, BUFN, Wakil SPV, Non-Shift, & Tahunan)."
+              : isWakilSpv
+                ? `Rekap capaian tim ${user.smelter}, ekspor Excel, serta cetak Slip KPI PDF bulanan & tahunan.`
+                : "Lihat riwayat nilai KPI Anda 1 tahun berjalan (Jan–Des) dan unduh Slip KPI PDF pribadi Anda."}
+          </p>
+        </Link>
+
         {isAdminOrAbove && (
           <Link
             href="/admin/users"
@@ -109,7 +128,7 @@ async function KontenDashboard() {
             </h2>
             <p className="mt-1 text-sm text-slate-300">
               {isSuperAdmin
-                ? "Kelola Junior Safety, Safety Officer, Senior SO, Wakil SPV, Admin BUFN, dan mutasi lokasi."
+                ? "Kelola Junior Safety, Safety Officer, Senior SO, Wakil SPV, Admin BUFN, dan atur BUFN/Smelter."
                 : `Kelola personel lapangan & Wakil SPV di wilayah ${user.bufn}, mutasi smelter, dan reset password.`}
             </p>
           </Link>
