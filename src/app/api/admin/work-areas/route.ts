@@ -59,12 +59,14 @@ export async function POST(request: Request) {
         );
       }
 
-      const nextAreas = [...areas, { name: bufnName, smelters: [] }];
-      await saveWorkAreas(nextAreas);
+      const sortedAreas = await saveWorkAreas([
+        ...areas,
+        { name: bufnName, smelters: [] },
+      ]);
       return NextResponse.json({
         berhasil: true,
         pesan: `Wilayah "${bufnName}" berhasil ditambahkan.`,
-        workAreas: nextAreas,
+        workAreas: sortedAreas,
       });
     }
 
@@ -81,14 +83,13 @@ export async function POST(request: Request) {
       }
 
       const bufnName = String(body.bufnName || "").trim();
-      const nextAreas = areas.filter(
-        (a) => a.name.toLowerCase() !== bufnName.toLowerCase()
+      const sortedAreas = await saveWorkAreas(
+        areas.filter((a) => a.name.toLowerCase() !== bufnName.toLowerCase())
       );
-      await saveWorkAreas(nextAreas);
       return NextResponse.json({
         berhasil: true,
         pesan: `Wilayah "${bufnName}" berhasil dihapus.`,
-        workAreas: nextAreas,
+        workAreas: sortedAreas,
       });
     }
 
@@ -100,25 +101,26 @@ export async function POST(request: Request) {
           : user.bufn;
       const smelterName = String(body.smelterName || "").trim();
 
-      const nextAreas = areas.map((area) => {
-        if (area.name.toLowerCase() !== targetBufn.toLowerCase()) return area;
-        return {
-          ...area,
-          smelters: area.smelters.filter(
-            (s) => s.toLowerCase() !== smelterName.toLowerCase()
-          ),
-        };
-      });
+      const sortedAreas = await saveWorkAreas(
+        areas.map((area) => {
+          if (area.name.toLowerCase() !== targetBufn.toLowerCase()) return area;
+          return {
+            ...area,
+            smelters: area.smelters.filter(
+              (s) => s.toLowerCase() !== smelterName.toLowerCase()
+            ),
+          };
+        })
+      );
 
-      await saveWorkAreas(nextAreas);
       return NextResponse.json({
         berhasil: true,
         pesan: `Smelter "${smelterName}" berhasil dihapus dari ${targetBufn}.`,
-        workAreas: nextAreas,
+        workAreas: sortedAreas,
       });
     }
 
-    // 4. Tambah Smelter ke BUFN (Default)
+    // 4. Tambah Smelter ke BUFN (Otomatis diurutkan A-Z)
     const targetBufn =
       user.role === "super_admin"
         ? String(body.bufnName || "").trim()
@@ -155,18 +157,18 @@ export async function POST(request: Request) {
       );
     }
 
-    const nextAreas = areas.map((area, idx) =>
-      idx === foundIdx
-        ? { ...area, smelters: [...area.smelters, smelterName] }
-        : area
+    const sortedAreas = await saveWorkAreas(
+      areas.map((area, idx) =>
+        idx === foundIdx
+          ? { ...area, smelters: [...area.smelters, smelterName] }
+          : area
+      )
     );
-
-    await saveWorkAreas(nextAreas);
 
     return NextResponse.json({
       berhasil: true,
       pesan: `Smelter "${smelterName}" berhasil ditambahkan ke ${areas[foundIdx].name}.`,
-      workAreas: nextAreas,
+      workAreas: sortedAreas,
     });
   } catch (error) {
     return NextResponse.json(

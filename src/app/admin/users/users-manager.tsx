@@ -6,6 +6,7 @@ import type { SessionUser, UserRole } from "@/lib/session";
 import {
   JOB_TITLES,
   KPI_CATEGORY_LABELS,
+  normalizeAndSortWorkAreas,
   type BufnArea,
   type JobTitle,
   type KpiCategory,
@@ -18,6 +19,13 @@ interface Props {
   initialWorkAreas: BufnArea[];
 }
 
+interface ConfirmDialogState {
+  title: string;
+  message: string;
+  confirmLabel: string;
+  onConfirm: () => Promise<void>;
+}
+
 export default function UsersManager({
   currentUser,
   initialUsers,
@@ -27,7 +35,9 @@ export default function UsersManager({
   const isSuperAdmin = currentUser.role === "super_admin";
 
   const [users, setUsers] = useState<ManagedUser[]>(initialUsers);
-  const [workAreas, setWorkAreas] = useState<BufnArea[]>(initialWorkAreas);
+  const [workAreas, setWorkAreas] = useState<BufnArea[]>(() =>
+    normalizeAndSortWorkAreas(initialWorkAreas)
+  );
   const [search, setSearch] = useState("");
   const [filterBufn, setFilterBufn] = useState<string>(
     isSuperAdmin ? "ALL" : currentUser.bufn
@@ -36,6 +46,11 @@ export default function UsersManager({
 
   const [showAddForm, setShowAddForm] = useState(false);
   const [showAreaManager, setShowAreaManager] = useState(false);
+
+  // Dialog konfirmasi modern pengganti window.confirm
+  const [confirmDialog, setConfirmDialog] =
+    useState<ConfirmDialogState | null>(null);
+  const [confirmProcessing, setConfirmProcessing] = useState(false);
 
   // Form tambah pengguna
   const defaultBufn = isSuperAdmin
@@ -80,7 +95,10 @@ export default function UsersManager({
 
   const availableSmeltersForFilter =
     filterBufn === "ALL"
-      ? Array.from(new Set(workAreas.flatMap((a) => a.smelters)))
+      ? Array.from(new Set(workAreas.flatMap((a) => a.smelters))).sort(
+          (a, b) =>
+            a.localeCompare(b, "id", { sensitivity: "base", numeric: true })
+        )
       : workAreas.find((a) => a.name === filterBufn)?.smelters || [];
 
   const filteredUsers = users.filter((u) => {
@@ -109,7 +127,9 @@ export default function UsersManager({
     const uData = await uRes.json();
     const wData = await wRes.json();
     if (uRes.ok && uData.berhasil) setUsers(uData.users);
-    if (wRes.ok && wData.berhasil) setWorkAreas(wData.workAreas);
+    if (wRes.ok && wData.berhasil) {
+      setWorkAreas(normalizeAndSortWorkAreas(wData.workAreas));
+    }
     router.refresh();
   }
 
@@ -193,7 +213,7 @@ export default function UsersManager({
         });
       } else {
         setBanner({ type: "ok", text: data.pesan });
-        setWorkAreas(data.workAreas);
+        setWorkAreas(normalizeAndSortWorkAreas(data.workAreas));
         setTargetBufnSmelter(newBufnName.trim());
         setNewBufnName("");
         router.refresh();
@@ -205,43 +225,45 @@ export default function UsersManager({
     }
   }
 
-  async function handleDeleteBufn(bufnName: string) {
-    if (
-      !window.confirm(
-        `Hapus wilayah "${bufnName}" beserta seluruh daftar Smelter di dalamnya?`
-      )
-    )
-      return;
-    setSavingArea(true);
-    setBanner(null);
-    try {
-      const res = await fetch("/api/admin/work-areas", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          action: "delete_bufn",
-          bufnName,
-        }),
-      });
-      const data = await res.json();
-      if (!res.ok || !data.berhasil) {
-        setBanner({
-          type: "err",
-          text: data.pesan || "Gagal menghapus BUFN.",
-        });
-      } else {
-        setBanner({ type: "ok", text: data.pesan });
-        setWorkAreas(data.workAreas);
-        if (targetBufnSmelter === bufnName) {
-          setTargetBufnSmelter(data.workAreas[0]?.name || "");
+  function requestDeleteBufn(bufnName: string) {
+    setConfirmDialog({
+      title: `Hapus Wilayah ${bufnName}?`,
+      message: `Seluruh daftar Smelter di dalam wilayah "${bufnName}" akan ikut dihapus dari pengaturan area. Tindakan ini tidak dapat dibatalkan.`,
+      confirmLabel: "Ya, Hapus BUFN",
+      onConfirm: async () => {
+        setSavingArea(true);
+        setBanner(null);
+        try {
+          const res = await fetch("/api/admin/work-areas", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              action: "delete_bufn",
+              bufnName,
+            }),
+          });
+          const data = await res.json();
+          if (!res.ok || !data.berhasil) {
+            setBanner({
+              type: "err",
+              text: data.pesan || "Gagal menghapus BUFN.",
+            });
+          } else {
+            const sorted = normalizeAndSortWorkAreas(data.workAreas);
+            setBanner({ type: "ok", text: data.pesan });
+            setWorkAreas(sorted);
+            if (targetBufnSmelter === bufnName) {
+              setTargetBufnSmelter(sorted[0]?.name || "");
+            }
+            router.refresh();
+          }
+        } catch {
+          setBanner({ type: "err", text: "Gagal terhubung ke server." });
+        } finally {
+          setSavingArea(false);
         }
-        router.refresh();
-      }
-    } catch {
-      setBanner({ type: "err", text: "Gagal terhubung ke server." });
-    } finally {
-      setSavingArea(false);
-    }
+      },
+    });
   }
 
   async function handleAddSmelter(e: React.FormEvent) {
@@ -267,7 +289,7 @@ export default function UsersManager({
         });
       } else {
         setBanner({ type: "ok", text: data.pesan });
-        setWorkAreas(data.workAreas);
+        setWorkAreas(normalizeAndSortWorkAreas(data.workAreas));
         setNewSmelterName("");
         router.refresh();
       }
@@ -278,39 +300,42 @@ export default function UsersManager({
     }
   }
 
-  async function handleDeleteSmelter(bufnName: string, smelterName: string) {
-    if (
-      !window.confirm(`Hapus "${smelterName}" dari wilayah ${bufnName}?`)
-    )
-      return;
-    setSavingArea(true);
-    setBanner(null);
-    try {
-      const res = await fetch("/api/admin/work-areas", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          action: "delete_smelter",
-          bufnName,
-          smelterName,
-        }),
-      });
-      const data = await res.json();
-      if (!res.ok || !data.berhasil) {
-        setBanner({
-          type: "err",
-          text: data.pesan || "Gagal menghapus smelter.",
-        });
-      } else {
-        setBanner({ type: "ok", text: data.pesan });
-        setWorkAreas(data.workAreas);
-        router.refresh();
-      }
-    } catch {
-      setBanner({ type: "err", text: "Gagal terhubung ke server." });
-    } finally {
-      setSavingArea(false);
-    }
+  function requestDeleteSmelter(bufnName: string, smelterName: string) {
+    setConfirmDialog({
+      title: `Hapus ${smelterName}?`,
+      message: `Lokasi "${smelterName}" akan dihapus dari wilayah ${bufnName}.`,
+      confirmLabel: "Ya, Hapus Smelter",
+      onConfirm: async () => {
+        setSavingArea(true);
+        setBanner(null);
+        try {
+          const res = await fetch("/api/admin/work-areas", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              action: "delete_smelter",
+              bufnName,
+              smelterName,
+            }),
+          });
+          const data = await res.json();
+          if (!res.ok || !data.berhasil) {
+            setBanner({
+              type: "err",
+              text: data.pesan || "Gagal menghapus smelter.",
+            });
+          } else {
+            setBanner({ type: "ok", text: data.pesan });
+            setWorkAreas(normalizeAndSortWorkAreas(data.workAreas));
+            router.refresh();
+          }
+        } catch {
+          setBanner({ type: "err", text: "Gagal terhubung ke server." });
+        } finally {
+          setSavingArea(false);
+        }
+      },
+    });
   }
 
   function openEditModal(u: ManagedUser) {
@@ -393,18 +418,39 @@ export default function UsersManager({
     await reloadData();
   }
 
-  async function handleDeleteUser(u: ManagedUser) {
-    if (!window.confirm(`Yakin ingin menghapus akun ${u.name} (${u.employeeId})?`))
-      return;
-    setBanner(null);
-    const res = await fetch(`/api/admin/users/${u.uid}`, { method: "DELETE" });
-    const data = await res.json();
-    if (!res.ok || !data.berhasil) {
-      setBanner({ type: "err", text: data.pesan || "Gagal menghapus akun." });
-      return;
+  function requestDeleteUser(u: ManagedUser) {
+    setConfirmDialog({
+      title: `Hapus Akun ${u.name}?`,
+      message: `Akun personel "${u.name}" (${u.employeeId}) akan dihapus secara permanen dari daftar pengguna aktif.`,
+      confirmLabel: "Ya, Hapus Akun",
+      onConfirm: async () => {
+        setBanner(null);
+        const res = await fetch(`/api/admin/users/${u.uid}`, {
+          method: "DELETE",
+        });
+        const data = await res.json();
+        if (!res.ok || !data.berhasil) {
+          setBanner({
+            type: "err",
+            text: data.pesan || "Gagal menghapus akun.",
+          });
+          return;
+        }
+        setBanner({ type: "ok", text: data.pesan });
+        await reloadData();
+      },
+    });
+  }
+
+  async function executeConfirmDialog() {
+    if (!confirmDialog) return;
+    setConfirmProcessing(true);
+    try {
+      await confirmDialog.onConfirm();
+    } finally {
+      setConfirmProcessing(false);
+      setConfirmDialog(null);
     }
-    setBanner({ type: "ok", text: data.pesan });
-    await reloadData();
   }
 
   const addSmelterOptions =
@@ -420,13 +466,20 @@ export default function UsersManager({
     <div className="space-y-6">
       {banner && (
         <div
-          className={`rounded-lg border p-3.5 text-sm ${
+          className={`flex items-center justify-between gap-3 rounded-lg border p-3.5 text-sm ${
             banner.type === "ok"
               ? "border-[#7A9278]/50 bg-[#7A9278]/15 text-[#C3DEC0]"
               : "border-red-500/40 bg-red-950/50 text-red-200"
           }`}
         >
-          {banner.text}
+          <span>{banner.text}</span>
+          <button
+            type="button"
+            onClick={() => setBanner(null)}
+            className="rounded px-1.5 py-0.5 text-xs opacity-70 hover:opacity-100"
+          >
+            ✕
+          </button>
         </div>
       )}
 
@@ -509,7 +562,7 @@ export default function UsersManager({
         </div>
       </div>
 
-      {/* Panel Kelola BUFN & Smelter (Tambah & Hapus Penuh) */}
+      {/* Panel Kelola BUFN & Smelter (Tambah & Hapus Penuh + Auto-Sort A-Z) */}
       {showAreaManager && (
         <div className="space-y-5 rounded-xl border border-[#7A9278]/50 bg-[#2B3035] p-5">
           <div>
@@ -517,12 +570,11 @@ export default function UsersManager({
               Pengaturan Wilayah BUFN & Lokasi Smelter
             </h2>
             <p className="text-xs text-slate-400">
-              Tambah atau hapus BUFN serta atur daftar Smelter di setiap wilayah secara mandiri.
+              Tambah atau hapus BUFN serta atur daftar Smelter secara mandiri. Daftar otomatis diurutkan sesuai abjad (A–Z).
             </p>
           </div>
 
           <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
-            {/* Tambah BUFN Baru (Khusus Super Admin) */}
             {isSuperAdmin && (
               <form
                 onSubmit={handleAddBufn}
@@ -551,7 +603,6 @@ export default function UsersManager({
               </form>
             )}
 
-            {/* Tambah Smelter Baru */}
             <form
               onSubmit={handleAddSmelter}
               className="space-y-3 rounded-lg border border-[#495057] bg-[#212529] p-4"
@@ -581,7 +632,7 @@ export default function UsersManager({
                 <input
                   type="text"
                   required
-                  placeholder="Nama Smelter (mis: Smelter G)"
+                  placeholder="Nama Smelter (mis: Smelter M)"
                   value={newSmelterName}
                   onChange={(e) => setNewSmelterName(e.target.value)}
                   className="flex-1 rounded-lg border border-[#495057] bg-[#2B3035] px-3 py-2 text-sm text-[#F1F3F5] placeholder-slate-500"
@@ -597,7 +648,6 @@ export default function UsersManager({
             </form>
           </div>
 
-          {/* Daftar Kartu BUFN & Smelter dengan Tombol Hapus */}
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
             {visibleWorkAreas.map((area) => (
               <div
@@ -611,8 +661,8 @@ export default function UsersManager({
                       <button
                         type="button"
                         disabled={savingArea}
-                        onClick={() => handleDeleteBufn(area.name)}
-                        className="rounded border border-red-500/40 px-2 py-0.5 text-[11px] text-red-300 hover:bg-red-950/60"
+                        onClick={() => requestDeleteBufn(area.name)}
+                        className="rounded border border-red-500/40 px-2 py-0.5 text-[11px] text-red-300 transition hover:bg-red-950/60"
                       >
                         Hapus BUFN
                       </button>
@@ -630,9 +680,9 @@ export default function UsersManager({
                           <button
                             type="button"
                             disabled={savingArea}
-                            onClick={() => handleDeleteSmelter(area.name, s)}
+                            onClick={() => requestDeleteSmelter(area.name, s)}
                             title={`Hapus ${s}`}
-                            className="ml-0.5 rounded px-1 text-red-400 hover:bg-red-950 hover:text-red-200"
+                            className="ml-0.5 rounded px-1 text-red-400 transition hover:bg-red-950 hover:text-red-200"
                           >
                             ×
                           </button>
@@ -929,7 +979,7 @@ export default function UsersManager({
                         </button>
                         <button
                           type="button"
-                          onClick={() => handleDeleteUser(u)}
+                          onClick={() => requestDeleteUser(u)}
                           className="rounded border border-red-500/40 px-2.5 py-1 text-xs font-medium text-red-300 hover:bg-red-950/50"
                         >
                           Hapus
@@ -954,6 +1004,58 @@ export default function UsersManager({
           </tbody>
         </table>
       </div>
+
+      {/* Modal Konfirmasi Kustom (Pengganti Browser Alert) */}
+      {confirmDialog && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 p-4 backdrop-blur-xs">
+          <div className="w-full max-w-md overflow-hidden rounded-xl border border-[#495057] bg-[#2B3035] shadow-2xl">
+            <div className="flex items-start gap-3.5 p-5">
+              <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full border border-red-500/30 bg-red-500/15 text-red-400">
+                <svg
+                  className="h-5 w-5"
+                  fill="none"
+                  viewBox="0 0 24 24"
+                  strokeWidth={2}
+                  stroke="currentColor"
+                >
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126ZM12 15.75h.007v.008H12v-.008Z"
+                  />
+                </svg>
+              </div>
+              <div className="space-y-1.5">
+                <h3 className="text-base font-bold text-[#F1F3F5]">
+                  {confirmDialog.title}
+                </h3>
+                <p className="text-xs leading-relaxed text-slate-300">
+                  {confirmDialog.message}
+                </p>
+              </div>
+            </div>
+
+            <div className="flex items-center justify-end gap-2.5 border-t border-[#495057]/70 bg-[#212529]/80 px-5 py-3.5">
+              <button
+                type="button"
+                disabled={confirmProcessing}
+                onClick={() => setConfirmDialog(null)}
+                className="rounded-lg border border-[#495057] bg-[#2B3035] px-4 py-2 text-xs font-semibold text-slate-200 transition hover:bg-[#343A40] disabled:opacity-50"
+              >
+                Batal
+              </button>
+              <button
+                type="button"
+                disabled={confirmProcessing}
+                onClick={executeConfirmDialog}
+                className="rounded-lg bg-red-600 px-4 py-2 text-xs font-semibold text-white transition hover:bg-red-500 disabled:opacity-50"
+              >
+                {confirmProcessing ? "Memproses..." : confirmDialog.confirmLabel}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Modal Edit & Mutasi Lokasi / Jabatan */}
       {editingUser && (

@@ -59,7 +59,22 @@ export function getParamWeightForCategory(
     : p.weight;
 }
 
-export const DEFAULT_WORK_AREAS: BufnArea[] = [
+export function normalizeAndSortWorkAreas(areas: BufnArea[]): BufnArea[] {
+  return [...areas]
+    .map((area) => ({
+      name: area.name.trim(),
+      smelters: Array.from(
+        new Set(area.smelters.map((s) => s.trim()).filter(Boolean))
+      ).sort((a, b) =>
+        a.localeCompare(b, "id", { sensitivity: "base", numeric: true })
+      ),
+    }))
+    .sort((a, b) =>
+      a.name.localeCompare(b.name, "id", { sensitivity: "base", numeric: true })
+    );
+}
+
+export const DEFAULT_WORK_AREAS: BufnArea[] = normalizeAndSortWorkAreas([
   {
     name: "BUFN 1",
     smelters: ["Smelter A", "Smelter B", "Smelter G"],
@@ -80,7 +95,7 @@ export const DEFAULT_WORK_AREAS: BufnArea[] = [
     name: "BUFN 5",
     smelters: [],
   },
-];
+]);
 
 export async function getWorkAreas(): Promise<BufnArea[]> {
   try {
@@ -89,7 +104,7 @@ export async function getWorkAreas(): Promise<BufnArea[]> {
     if (jsonStr) {
       const parsed = JSON.parse(jsonStr) as BufnArea[];
       if (Array.isArray(parsed)) {
-        return parsed;
+        return normalizeAndSortWorkAreas(parsed);
       }
     }
   } catch {
@@ -98,9 +113,11 @@ export async function getWorkAreas(): Promise<BufnArea[]> {
   return DEFAULT_WORK_AREAS;
 }
 
-export async function saveWorkAreas(areas: BufnArea[]): Promise<void> {
+export async function saveWorkAreas(areas: BufnArea[]): Promise<BufnArea[]> {
+  const sorted = normalizeAndSortWorkAreas(areas);
   await firestoreSetDoc("system_config", "work_areas", {
-    areasJson: { stringValue: JSON.stringify(areas) },
+    areasJson: { stringValue: JSON.stringify(sorted) },
     updatedAt: { stringValue: new Date().toISOString() },
   });
+  return sorted;
 }
