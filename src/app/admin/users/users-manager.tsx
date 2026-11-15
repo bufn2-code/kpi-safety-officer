@@ -35,14 +35,14 @@ export default function UsersManager({
   const [filterSmelter, setFilterSmelter] = useState<string>("ALL");
 
   const [showAddForm, setShowAddForm] = useState(false);
-  const [showSmelterPanel, setShowSmelterPanel] = useState(false);
+  const [showAreaManager, setShowAreaManager] = useState(false);
 
   // Form tambah pengguna
   const defaultBufn = isSuperAdmin
     ? workAreas[0]?.name || "BUFN 1"
     : currentUser.bufn;
   const defaultSmelter =
-    workAreas.find((a) => a.name === defaultBufn)?.smelters[0] || "Smelter A";
+    workAreas.find((a) => a.name === defaultBufn)?.smelters[0] || "";
 
   const [employeeId, setEmployeeId] = useState("");
   const [name, setName] = useState("");
@@ -54,10 +54,11 @@ export default function UsersManager({
   const [password, setPassword] = useState("");
   const [submitting, setSubmitting] = useState(false);
 
-  // Form tambah smelter baru
+  // Kelola BUFN & Smelter
+  const [newBufnName, setNewBufnName] = useState("");
   const [targetBufnSmelter, setTargetBufnSmelter] = useState(defaultBufn);
   const [newSmelterName, setNewSmelterName] = useState("");
-  const [savingSmelter, setSavingSmelter] = useState(false);
+  const [savingArea, setSavingArea] = useState(false);
 
   // Modal edit & mutasi
   const [editingUser, setEditingUser] = useState<ManagedUser | null>(null);
@@ -170,9 +171,82 @@ export default function UsersManager({
     }
   }
 
+  async function handleAddBufn(e: React.FormEvent) {
+    e.preventDefault();
+    if (!newBufnName.trim()) return;
+    setSavingArea(true);
+    setBanner(null);
+    try {
+      const res = await fetch("/api/admin/work-areas", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "add_bufn",
+          bufnName: newBufnName.trim(),
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.berhasil) {
+        setBanner({
+          type: "err",
+          text: data.pesan || "Gagal menambah BUFN.",
+        });
+      } else {
+        setBanner({ type: "ok", text: data.pesan });
+        setWorkAreas(data.workAreas);
+        setTargetBufnSmelter(newBufnName.trim());
+        setNewBufnName("");
+        router.refresh();
+      }
+    } catch {
+      setBanner({ type: "err", text: "Gagal terhubung ke server." });
+    } finally {
+      setSavingArea(false);
+    }
+  }
+
+  async function handleDeleteBufn(bufnName: string) {
+    if (
+      !window.confirm(
+        `Hapus wilayah "${bufnName}" beserta seluruh daftar Smelter di dalamnya?`
+      )
+    )
+      return;
+    setSavingArea(true);
+    setBanner(null);
+    try {
+      const res = await fetch("/api/admin/work-areas", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "delete_bufn",
+          bufnName,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.berhasil) {
+        setBanner({
+          type: "err",
+          text: data.pesan || "Gagal menghapus BUFN.",
+        });
+      } else {
+        setBanner({ type: "ok", text: data.pesan });
+        setWorkAreas(data.workAreas);
+        if (targetBufnSmelter === bufnName) {
+          setTargetBufnSmelter(data.workAreas[0]?.name || "");
+        }
+        router.refresh();
+      }
+    } catch {
+      setBanner({ type: "err", text: "Gagal terhubung ke server." });
+    } finally {
+      setSavingArea(false);
+    }
+  }
+
   async function handleAddSmelter(e: React.FormEvent) {
     e.preventDefault();
-    setSavingSmelter(true);
+    setSavingArea(true);
     setBanner(null);
 
     try {
@@ -180,6 +254,7 @@ export default function UsersManager({
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
+          action: "add_smelter",
           bufnName: isSuperAdmin ? targetBufnSmelter : currentUser.bufn,
           smelterName: newSmelterName,
         }),
@@ -190,17 +265,51 @@ export default function UsersManager({
           type: "err",
           text: data.pesan || "Gagal menambah smelter.",
         });
-        setSavingSmelter(false);
-        return;
+      } else {
+        setBanner({ type: "ok", text: data.pesan });
+        setWorkAreas(data.workAreas);
+        setNewSmelterName("");
+        router.refresh();
       }
-
-      setBanner({ type: "ok", text: data.pesan });
-      setNewSmelterName("");
-      await reloadData();
     } catch {
       setBanner({ type: "err", text: "Gagal terhubung ke server." });
     } finally {
-      setSavingSmelter(false);
+      setSavingArea(false);
+    }
+  }
+
+  async function handleDeleteSmelter(bufnName: string, smelterName: string) {
+    if (
+      !window.confirm(`Hapus "${smelterName}" dari wilayah ${bufnName}?`)
+    )
+      return;
+    setSavingArea(true);
+    setBanner(null);
+    try {
+      const res = await fetch("/api/admin/work-areas", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "delete_smelter",
+          bufnName,
+          smelterName,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.berhasil) {
+        setBanner({
+          type: "err",
+          text: data.pesan || "Gagal menghapus smelter.",
+        });
+      } else {
+        setBanner({ type: "ok", text: data.pesan });
+        setWorkAreas(data.workAreas);
+        router.refresh();
+      }
+    } catch {
+      setBanner({ type: "err", text: "Gagal terhubung ke server." });
+    } finally {
+      setSavingArea(false);
     }
   }
 
@@ -211,11 +320,10 @@ export default function UsersManager({
     setEditRole(u.role);
     setEditJobTitle(u.jobTitle || "Safety Officer");
     setEditKpiCategory(u.kpiCategory || "shift_3g2s");
-    setEditBufn(u.bufn === "ALL" ? defaultBufn : u.bufn);
-    const list =
-      workAreas.find(
-        (a) => a.name === (u.bufn === "ALL" ? defaultBufn : u.bufn)
-      )?.smelters || [];
+    const targetB =
+      u.bufn === "ALL" ? workAreas[0]?.name || "BUFN 1" : u.bufn;
+    setEditBufn(targetB);
+    const list = workAreas.find((a) => a.name === targetB)?.smelters || [];
     setEditSmelter(
       u.smelter && u.smelter !== "ALL" && u.smelter !== "-"
         ? u.smelter
@@ -304,6 +412,10 @@ export default function UsersManager({
   const editSmelterOptions =
     workAreas.find((a) => a.name === editBufn)?.smelters || [];
 
+  const visibleWorkAreas = isSuperAdmin
+    ? workAreas
+    : workAreas.filter((a) => a.name === currentUser.bufn);
+
   return (
     <div className="space-y-6">
       {banner && (
@@ -338,7 +450,7 @@ export default function UsersManager({
               }}
               className="rounded-lg border border-[#495057] bg-[#212529] px-3 py-2 text-sm text-[#F1F3F5] focus:border-[#5B7C99] focus:outline-none"
             >
-              <option value="ALL">Semua BUFN (1 – 5)</option>
+              <option value="ALL">Semua BUFN</option>
               {workAreas.map((area) => (
                 <option key={area.name} value={area.name}>
                   {area.name}
@@ -365,20 +477,29 @@ export default function UsersManager({
           <button
             type="button"
             onClick={() => {
-              setShowSmelterPanel((prev) => !prev);
+              setShowAreaManager((prev) => !prev);
               setShowAddForm(false);
               setBanner(null);
             }}
             className="rounded-lg border border-[#495057] bg-[#212529] px-3.5 py-2 text-sm font-medium text-slate-200 transition hover:border-[#5B7C99]"
           >
-            {showSmelterPanel ? "Tutup Kelola Smelter" : "+ Tambah Smelter"}
+            {showAreaManager
+              ? "Tutup Kelola Wilayah"
+              : "Kelola BUFN & Smelter"}
           </button>
 
           <button
             type="button"
             onClick={() => {
+              const firstBufn = isSuperAdmin
+                ? workAreas[0]?.name || ""
+                : currentUser.bufn;
+              setBufn(firstBufn);
+              const firstSmelter =
+                workAreas.find((a) => a.name === firstBufn)?.smelters[0] || "";
+              setSmelter(firstSmelter);
               setShowAddForm((prev) => !prev);
-              setShowSmelterPanel(false);
+              setShowAreaManager(false);
               setBanner(null);
             }}
             className="rounded-lg bg-[#5B7C99] px-4 py-2 text-sm font-semibold text-white transition hover:bg-[#45657F]"
@@ -388,71 +509,146 @@ export default function UsersManager({
         </div>
       </div>
 
-      {/* Panel Tambah Smelter Baru */}
-      {showSmelterPanel && (
-        <form
-          onSubmit={handleAddSmelter}
-          className="space-y-4 rounded-xl border border-[#7A9278]/50 bg-[#2B3035] p-5"
-        >
-          <h2 className="text-base font-semibold text-[#F1F3F5]">
-            Tambah Lokasi Smelter Baru
-          </h2>
-          <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
-            <div>
-              <label className="mb-1 block text-xs font-medium text-slate-300">
-                Wilayah BUFN
-              </label>
-              {isSuperAdmin ? (
-                <select
-                  value={targetBufnSmelter}
-                  onChange={(e) => setTargetBufnSmelter(e.target.value)}
-                  className="w-full rounded-lg border border-[#495057] bg-[#212529] px-3 py-2 text-sm text-[#F1F3F5]"
-                >
-                  {workAreas.map((a) => (
-                    <option key={a.name} value={a.name}>
-                      {a.name}
-                    </option>
-                  ))}
-                </select>
-              ) : (
-                <div className="rounded-lg border border-[#495057] bg-[#212529]/60 px-3 py-2 text-sm text-slate-200">
-                  {currentUser.bufn}
+      {/* Panel Kelola BUFN & Smelter (Tambah & Hapus Penuh) */}
+      {showAreaManager && (
+        <div className="space-y-5 rounded-xl border border-[#7A9278]/50 bg-[#2B3035] p-5">
+          <div>
+            <h2 className="text-base font-semibold text-[#F1F3F5]">
+              Pengaturan Wilayah BUFN & Lokasi Smelter
+            </h2>
+            <p className="text-xs text-slate-400">
+              Tambah atau hapus BUFN serta atur daftar Smelter di setiap wilayah secara mandiri.
+            </p>
+          </div>
+
+          <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+            {/* Tambah BUFN Baru (Khusus Super Admin) */}
+            {isSuperAdmin && (
+              <form
+                onSubmit={handleAddBufn}
+                className="space-y-3 rounded-lg border border-[#495057] bg-[#212529] p-4"
+              >
+                <h3 className="text-xs font-semibold uppercase tracking-wider text-[#8BB3D6]">
+                  1. Tambah Wilayah BUFN Baru
+                </h3>
+                <div className="flex gap-2">
+                  <input
+                    type="text"
+                    required
+                    placeholder="Contoh: BUFN 6 / Area Khusus"
+                    value={newBufnName}
+                    onChange={(e) => setNewBufnName(e.target.value)}
+                    className="flex-1 rounded-lg border border-[#495057] bg-[#2B3035] px-3 py-2 text-sm text-[#F1F3F5] placeholder-slate-500"
+                  />
+                  <button
+                    type="submit"
+                    disabled={savingArea}
+                    className="rounded-lg bg-[#5B7C99] px-4 py-2 text-sm font-semibold text-white hover:bg-[#45657F] disabled:opacity-50"
+                  >
+                    + BUFN
+                  </button>
                 </div>
-              )}
-            </div>
+              </form>
+            )}
 
-            <div className="sm:col-span-2">
-              <label className="mb-1 block text-xs font-medium text-slate-300">
-                Nama Smelter Baru
-              </label>
-              <input
-                type="text"
-                required
-                placeholder="Contoh: Smelter U / Nikelmatte Line 2"
-                value={newSmelterName}
-                onChange={(e) => setNewSmelterName(e.target.value)}
-                className="w-full rounded-lg border border-[#495057] bg-[#212529] px-3 py-2 text-sm text-[#F1F3F5] placeholder-slate-500"
-              />
-            </div>
+            {/* Tambah Smelter Baru */}
+            <form
+              onSubmit={handleAddSmelter}
+              className="space-y-3 rounded-lg border border-[#495057] bg-[#212529] p-4"
+            >
+              <h3 className="text-xs font-semibold uppercase tracking-wider text-[#A3BE9F]">
+                {isSuperAdmin ? "2. " : ""}Tambah Smelter ke Wilayah BUFN
+              </h3>
+              <div className="flex flex-wrap gap-2">
+                {isSuperAdmin ? (
+                  <select
+                    value={targetBufnSmelter}
+                    onChange={(e) => setTargetBufnSmelter(e.target.value)}
+                    className="rounded-lg border border-[#495057] bg-[#2B3035] px-3 py-2 text-sm text-[#F1F3F5]"
+                  >
+                    {workAreas.map((a) => (
+                      <option key={a.name} value={a.name}>
+                        {a.name}
+                      </option>
+                    ))}
+                  </select>
+                ) : (
+                  <div className="rounded-lg border border-[#495057] bg-[#2B3035] px-3 py-2 text-sm text-slate-200">
+                    {currentUser.bufn}
+                  </div>
+                )}
+
+                <input
+                  type="text"
+                  required
+                  placeholder="Nama Smelter (mis: Smelter G)"
+                  value={newSmelterName}
+                  onChange={(e) => setNewSmelterName(e.target.value)}
+                  className="flex-1 rounded-lg border border-[#495057] bg-[#2B3035] px-3 py-2 text-sm text-[#F1F3F5] placeholder-slate-500"
+                />
+                <button
+                  type="submit"
+                  disabled={savingArea || workAreas.length === 0}
+                  className="rounded-lg bg-[#7A9278] px-4 py-2 text-sm font-semibold text-white hover:bg-[#667D64] disabled:opacity-50"
+                >
+                  + Smelter
+                </button>
+              </div>
+            </form>
           </div>
 
-          <div className="flex justify-end gap-2">
-            <button
-              type="button"
-              onClick={() => setShowSmelterPanel(false)}
-              className="rounded-lg border border-[#495057] bg-[#212529] px-4 py-2 text-sm text-slate-300"
-            >
-              Batal
-            </button>
-            <button
-              type="submit"
-              disabled={savingSmelter}
-              className="rounded-lg bg-[#7A9278] px-4 py-2 text-sm font-semibold text-white hover:bg-[#667D64] disabled:opacity-50"
-            >
-              {savingSmelter ? "Menyimpan..." : "Simpan Smelter"}
-            </button>
+          {/* Daftar Kartu BUFN & Smelter dengan Tombol Hapus */}
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+            {visibleWorkAreas.map((area) => (
+              <div
+                key={area.name}
+                className="flex flex-col justify-between rounded-lg border border-[#495057] bg-[#212529] p-4 space-y-3"
+              >
+                <div>
+                  <div className="flex items-center justify-between gap-2 border-b border-[#495057]/60 pb-2">
+                    <span className="font-bold text-[#F1F3F5]">{area.name}</span>
+                    {isSuperAdmin && (
+                      <button
+                        type="button"
+                        disabled={savingArea}
+                        onClick={() => handleDeleteBufn(area.name)}
+                        className="rounded border border-red-500/40 px-2 py-0.5 text-[11px] text-red-300 hover:bg-red-950/60"
+                      >
+                        Hapus BUFN
+                      </button>
+                    )}
+                  </div>
+
+                  <div className="mt-3 flex flex-wrap gap-1.5">
+                    {area.smelters.length > 0 ? (
+                      area.smelters.map((s) => (
+                        <span
+                          key={s}
+                          className="inline-flex items-center gap-1.5 rounded-md border border-[#495057] bg-[#2B3035] px-2.5 py-1 text-xs text-slate-200"
+                        >
+                          {s}
+                          <button
+                            type="button"
+                            disabled={savingArea}
+                            onClick={() => handleDeleteSmelter(area.name, s)}
+                            title={`Hapus ${s}`}
+                            className="ml-0.5 rounded px-1 text-red-400 hover:bg-red-950 hover:text-red-200"
+                          >
+                            ×
+                          </button>
+                        </span>
+                      ))
+                    ) : (
+                      <span className="text-xs italic text-slate-500">
+                        Belum ada Smelter terdaftar
+                      </span>
+                    )}
+                  </div>
+                </div>
+              </div>
+            ))}
           </div>
-        </form>
+        </div>
       )}
 
       {/* Form Tambah Pengguna Baru */}
@@ -473,7 +669,7 @@ export default function UsersManager({
               <input
                 type="text"
                 required
-                placeholder="Contoh: 82120"
+                placeholder="Contoh: IWIP-1042"
                 value={employeeId}
                 onChange={(e) => setEmployeeId(e.target.value)}
                 className="w-full rounded-lg border border-[#495057] bg-[#212529] px-3 py-2 text-sm text-[#F1F3F5] placeholder-slate-500"
@@ -519,9 +715,13 @@ export default function UsersManager({
                   onChange={(e) => setRole(e.target.value as UserRole)}
                   className="w-full rounded-lg border border-[#495057] bg-[#212529] px-3 py-2 text-sm text-[#F1F3F5]"
                 >
-                  <option value="safety_officer">Personel Lapangan / Wakil SPV</option>
+                  <option value="safety_officer">
+                    Personel Lapangan / Wakil SPV
+                  </option>
                   <option value="admin">Admin BUFN (Penilai Wilayah)</option>
-                  <option value="super_admin">Super Admin (Comprehensive HSE)</option>
+                  <option value="super_admin">
+                    Super Admin (Comprehensive HSE)
+                  </option>
                 </select>
               </div>
             )}
@@ -605,17 +805,23 @@ export default function UsersManager({
                 <label className="mb-1 block text-xs font-medium text-slate-300">
                   Lokasi Smelter
                 </label>
-                <select
-                  value={smelter}
-                  onChange={(e) => setSmelter(e.target.value)}
-                  className="w-full rounded-lg border border-[#495057] bg-[#212529] px-3 py-2 text-sm text-[#F1F3F5]"
-                >
-                  {addSmelterOptions.map((s) => (
-                    <option key={s} value={s}>
-                      {s}
-                    </option>
-                  ))}
-                </select>
+                {addSmelterOptions.length > 0 ? (
+                  <select
+                    value={smelter}
+                    onChange={(e) => setSmelter(e.target.value)}
+                    className="w-full rounded-lg border border-[#495057] bg-[#212529] px-3 py-2 text-sm text-[#F1F3F5]"
+                  >
+                    {addSmelterOptions.map((s) => (
+                      <option key={s} value={s}>
+                        {s}
+                      </option>
+                    ))}
+                  </select>
+                ) : (
+                  <div className="rounded-lg border border-amber-500/40 bg-amber-950/30 px-3 py-2 text-xs text-amber-200">
+                    Belum ada Smelter di {bufn}. Tambahkan di &ldquo;Kelola BUFN &amp; Smelter&rdquo;.
+                  </div>
+                )}
               </div>
             )}
           </div>
@@ -797,7 +1003,9 @@ export default function UsersManager({
                     onChange={(e) => setEditRole(e.target.value as UserRole)}
                     className="w-full rounded-lg border border-[#495057] bg-[#212529] px-3 py-2 text-sm text-[#F1F3F5]"
                   >
-                    <option value="safety_officer">Personel Lapangan / Wakil SPV</option>
+                    <option value="safety_officer">
+                      Personel Lapangan / Wakil SPV
+                    </option>
                     <option value="admin">Admin BUFN</option>
                     <option value="super_admin">Super Admin</option>
                   </select>

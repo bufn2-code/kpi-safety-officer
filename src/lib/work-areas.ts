@@ -62,23 +62,23 @@ export function getParamWeightForCategory(
 export const DEFAULT_WORK_AREAS: BufnArea[] = [
   {
     name: "BUFN 1",
-    smelters: ["Smelter A", "Smelter B", "Smelter C", "Smelter D"],
+    smelters: ["Smelter A", "Smelter B", "Smelter G"],
   },
   {
     name: "BUFN 2",
-    smelters: ["Smelter E", "Smelter F", "Smelter G", "Smelter H"],
+    smelters: [],
   },
   {
     name: "BUFN 3",
-    smelters: ["Smelter I", "Smelter J", "Smelter K", "Smelter L"],
+    smelters: [],
   },
   {
     name: "BUFN 4",
-    smelters: ["Smelter M", "Smelter N", "Smelter O", "Smelter P"],
+    smelters: [],
   },
   {
     name: "BUFN 5",
-    smelters: ["Smelter Q", "Smelter R", "Smelter S", "Smelter T"],
+    smelters: [],
   },
 ];
 
@@ -88,12 +88,12 @@ export async function getWorkAreas(): Promise<BufnArea[]> {
     const jsonStr = doc?.fields?.areasJson?.stringValue;
     if (jsonStr) {
       const parsed = JSON.parse(jsonStr) as BufnArea[];
-      if (Array.isArray(parsed) && parsed.length > 0) {
+      if (Array.isArray(parsed)) {
         return parsed;
       }
     }
   } catch {
-    // Fallback ke default jika belum ada di Firestore
+    // Fallback ke default jika belum tersimpan di Firestore
   }
   return DEFAULT_WORK_AREAS;
 }
