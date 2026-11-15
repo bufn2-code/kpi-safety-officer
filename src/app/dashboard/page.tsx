@@ -30,34 +30,68 @@ async function KontenDashboard() {
             Selamat datang, {user.name}
           </h1>
           <p className="mt-0.5 text-sm text-slate-300">
-            ID: <span className="font-mono">{user.employeeId}</span> • Unit: {user.unit} • Peran:{" "}
+            ID: <span className="font-mono">{user.employeeId}</span> • Unit:{" "}
+            {user.unit} • Peran:{" "}
             <span className="rounded bg-[#7A9278]/20 px-2 py-0.5 text-xs font-semibold text-[#A3BE9F]">
               {labelRole}
             </span>
           </p>
         </div>
-        <div className="flex items-center gap-2.5">
-          {isAdminOrAbove && (
-            <Link
-              href="/admin/users"
-              className="rounded-lg bg-[#5B7C99] px-4 py-2 text-sm font-semibold text-white transition hover:bg-[#45657F]"
-            >
-              Kelola Pengguna
-            </Link>
-          )}
-          <LogoutButton />
-        </div>
+        <LogoutButton />
       </header>
 
-      <section className="rounded-xl border border-[#495057] bg-[#2B3035] p-6">
-        <h2 className="text-base font-semibold text-[#F1F3F5]">
-          Status Otentikasi & Manajemen Pengguna
-        </h2>
-        <p className="mt-2 text-sm text-slate-300">
-          {isAdminOrAbove
-            ? "Gunakan tombol Kelola Pengguna di atas untuk menambahkan akun Safety Officer atau Admin baru, mengatur unit, serta mereset password anggota tim."
-            : "Sesi login Anda aktif. Pada tahap berikutnya, halaman ini akan menampilkan Kartu KPI bulanan dan input realisasi target Anda."}
-        </p>
+      {/* Menu Utama */}
+      <section className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
+        <Link
+          href="/kpi-card"
+          className="group rounded-xl border border-[#495057] bg-[#2B3035] p-5 transition hover:border-[#7A9278]"
+        >
+          <span className="inline-block rounded bg-[#7A9278]/20 px-2.5 py-1 text-xs font-semibold text-[#A3BE9F]">
+            {isAdminOrAbove ? "Input & Penilaian" : "Hasil Penilaian"}
+          </span>
+          <h2 className="mt-3 text-lg font-bold text-[#F1F3F5] group-hover:text-[#A3BE9F]">
+            Kartu KPI Bulanan
+          </h2>
+          <p className="mt-1 text-sm text-slate-300">
+            {isAdminOrAbove
+              ? "Pilih Safety Officer, input atau revisi realisasi target bulanan, dan publikasikan hasil skor KPI."
+              : "Lihat hasil penilaian skor KPI bulanan Anda, rincian pencapaian target, dan catatan evaluasi Admin."}
+          </p>
+        </Link>
+
+        {isAdminOrAbove && (
+          <>
+            <Link
+              href="/admin/kpi-parameters"
+              className="group rounded-xl border border-[#495057] bg-[#2B3035] p-5 transition hover:border-[#5B7C99]"
+            >
+              <span className="inline-block rounded bg-[#5B7C99]/20 px-2.5 py-1 text-xs font-semibold text-[#8BB3D6]">
+                Konfigurasi KPI
+              </span>
+              <h2 className="mt-3 text-lg font-bold text-[#F1F3F5] group-hover:text-[#8BB3D6]">
+                Master Parameter KPI
+              </h2>
+              <p className="mt-1 text-sm text-slate-300">
+                Kelola daftar indikator kinerja, target bulanan, satuan, dan bobot penilaian (100%).
+              </p>
+            </Link>
+
+            <Link
+              href="/admin/users"
+              className="group rounded-xl border border-[#495057] bg-[#2B3035] p-5 transition hover:border-[#5B7C99]"
+            >
+              <span className="inline-block rounded bg-[#5B7C99]/20 px-2.5 py-1 text-xs font-semibold text-[#8BB3D6]">
+                Manajemen Tim
+              </span>
+              <h2 className="mt-3 text-lg font-bold text-[#F1F3F5] group-hover:text-[#8BB3D6]">
+                Kelola Pengguna
+              </h2>
+              <p className="mt-1 text-sm text-slate-300">
+                Tambah akun Safety Officer atau Admin baru, atur unit kerja, dan reset password.
+              </p>
+            </Link>
+          </>
+        )}
       </section>
     </div>
   );

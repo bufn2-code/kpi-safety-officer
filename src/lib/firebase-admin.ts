@@ -81,6 +81,7 @@ export async function getGoogleAccessToken(): Promise<string> {
 export type FirestoreValue =
   | { stringValue: string }
   | { integerValue: string }
+  | { doubleValue: number }
   | { booleanValue: boolean };
 
 export async function firestoreSetDoc(
@@ -138,6 +139,27 @@ export async function firestoreGetDoc(collection: string, docId: string) {
   return res.json();
 }
 
+export async function firestoreDeleteDoc(collection: string, docId: string) {
+  const { projectId } = getFirebaseEnv();
+  const token = await getGoogleAccessToken();
+  const url = `https://firestore.googleapis.com/v1/projects/${projectId}/databases/(default)/documents/${collection}/${docId}`;
+
+  const res = await fetch(url, {
+    method: "DELETE",
+    headers: {
+      Authorization: `Bearer ${token}`,
+    },
+    cache: "no-store",
+  });
+
+  if (!res.ok && res.status !== 404) {
+    const errText = await res.text();
+    throw new Error(`Firestore gagal menghapus (${res.status}): ${errText}`);
+  }
+
+  return true;
+}
+
 export async function firestoreListCollection(collection: string) {
   const { projectId } = getFirebaseEnv();
   const token = await getGoogleAccessToken();
@@ -164,13 +186,11 @@ export async function firestoreListCollection(collection: string) {
   return Array.isArray(data.documents) ? data.documents : [];
 }
 
-// Konversi ID Karyawan menjadi format email internal Firebase Auth
 export function employeeIdToEmail(employeeId: string): string {
   const cleanId = employeeId.trim().toLowerCase().replace(/[^a-z0-9._-]/g, "");
   return `${cleanId}@kpi-bufn.local`;
 }
 
-// Membuat akun baru di Firebase Authentication
 export async function createFirebaseAuthUser(
   employeeId: string,
   password: string,
@@ -208,7 +228,6 @@ export async function createFirebaseAuthUser(
   return { localId: data.localId, email };
 }
 
-// Mengubah password atau status aktif akun di Firebase Authentication (oleh Admin)
 export async function updateFirebaseAuthAccount(
   localId: string,
   updates: { password?: string; disabled?: boolean; displayName?: string }
@@ -240,7 +259,6 @@ export async function updateFirebaseAuthAccount(
   return data;
 }
 
-// Verifikasi ID Karyawan dan Password saat pengguna login
 export async function verifyEmployeePassword(
   employeeId: string,
   password: string
