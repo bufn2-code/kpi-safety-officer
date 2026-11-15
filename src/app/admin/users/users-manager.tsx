@@ -2,325 +2,85 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
-import type { ManagedUser } from "@/app/api/admin/users/route";
 import type { SessionUser, UserRole } from "@/lib/session";
-import type { BufnArea } from "@/lib/work-areas";
+import {
+  JOB_TITLES,
+  KPI_CATEGORY_LABELS,
+  type BufnArea,
+  type JobTitle,
+  type KpiCategory,
+} from "@/lib/work-areas";
+import type { ManagedUser } from "@/app/api/admin/users/route";
 
 interface Props {
-  initialUsers: ManagedUser[];
   currentUser: SessionUser;
+  initialUsers: ManagedUser[];
   initialWorkAreas: BufnArea[];
 }
 
 export default function UsersManager({
-  initialUsers,
   currentUser,
+  initialUsers,
   initialWorkAreas,
 }: Props) {
   const router = useRouter();
-  const [users, setUsers] = useState<ManagedUser[]>(initialUsers);
-  const [workAreas, setWorkAreas] = useState<BufnArea[]>(initialWorkAreas);
-
   const isSuperAdmin = currentUser.role === "super_admin";
 
-  // Filter daftar pengguna
+  const [users, setUsers] = useState<ManagedUser[]>(initialUsers);
+  const [workAreas, setWorkAreas] = useState<BufnArea[]>(initialWorkAreas);
   const [search, setSearch] = useState("");
   const [filterBufn, setFilterBufn] = useState<string>(
     isSuperAdmin ? "ALL" : currentUser.bufn
   );
   const [filterSmelter, setFilterSmelter] = useState<string>("ALL");
 
+  const [showAddForm, setShowAddForm] = useState(false);
+  const [showSmelterPanel, setShowSmelterPanel] = useState(false);
+
   // Form tambah pengguna
-  const defaultNewBufn = isSuperAdmin
+  const defaultBufn = isSuperAdmin
     ? workAreas[0]?.name || "BUFN 1"
     : currentUser.bufn;
-  const defaultNewSmelter =
-    workAreas.find((a) => a.name === defaultNewBufn)?.smelters[0] || "";
+  const defaultSmelter =
+    workAreas.find((a) => a.name === defaultBufn)?.smelters[0] || "Smelter A";
 
-  const [showAddForm, setShowAddForm] = useState(false);
   const [employeeId, setEmployeeId] = useState("");
   const [name, setName] = useState("");
   const [role, setRole] = useState<UserRole>("safety_officer");
-  const [newBufn, setNewBufn] = useState(defaultNewBufn);
-  const [newSmelter, setNewSmelter] = useState(defaultNewSmelter);
+  const [jobTitle, setJobTitle] = useState<JobTitle>("Safety Officer");
+  const [kpiCategory, setKpiCategory] = useState<KpiCategory>("shift_3g2s");
+  const [bufn, setBufn] = useState(defaultBufn);
+  const [smelter, setSmelter] = useState(defaultSmelter);
   const [password, setPassword] = useState("");
   const [submitting, setSubmitting] = useState(false);
 
-  // Modal edit & mutasi smelter
+  // Form tambah smelter baru
+  const [targetBufnSmelter, setTargetBufnSmelter] = useState(defaultBufn);
+  const [newSmelterName, setNewSmelterName] = useState("");
+  const [savingSmelter, setSavingSmelter] = useState(false);
+
+  // Modal edit & mutasi
   const [editingUser, setEditingUser] = useState<ManagedUser | null>(null);
   const [editName, setEditName] = useState("");
+  const [editEmployeeId, setEditEmployeeId] = useState("");
   const [editRole, setEditRole] = useState<UserRole>("safety_officer");
+  const [editJobTitle, setEditJobTitle] = useState<JobTitle>("Safety Officer");
+  const [editKpiCategory, setEditKpiCategory] =
+    useState<KpiCategory>("shift_3g2s");
   const [editBufn, setEditBufn] = useState("");
   const [editSmelter, setEditSmelter] = useState("");
-  const [newPassword, setNewPassword] = useState("");
+  const [editPassword, setEditPassword] = useState("");
   const [savingEdit, setSavingEdit] = useState(false);
-
-  // Panel Kelola Struktur BUFN & Smelter (khusus Super Admin)
-  const [showAreaPanel, setShowAreaPanel] = useState(false);
-  const [targetAreaForNewSmelter, setTargetAreaForNewSmelter] = useState(
-    workAreas[0]?.name || "BUFN 1"
-  );
-  const [newSmelterName, setNewSmelterName] = useState("");
-  const [newBufnName, setNewBufnName] = useState("");
-  const [savingAreas, setSavingAreas] = useState(false);
 
   const [banner, setBanner] = useState<{
     type: "ok" | "err";
     text: string;
   } | null>(null);
 
-  function getSmeltersForBufn(bufnName: string): string[] {
-    return workAreas.find((a) => a.name === bufnName)?.smelters || [];
-  }
-
-  function canManage(target: ManagedUser): boolean {
-    if (target.role === "super_admin") return false;
-    if (isSuperAdmin) return true;
-    return (
-      currentUser.role === "admin" &&
-      target.role === "safety_officer" &&
-      target.bufn === currentUser.bufn
-    );
-  }
-
-  function formatRole(r: UserRole): string {
-    if (r === "super_admin") return "Super Admin";
-    if (r === "admin") return "Admin BUFN";
-    return "Safety Officer";
-  }
-
-  async function reloadUsers() {
-    const res = await fetch("/api/admin/users", { cache: "no-store" });
-    const data = await res.json();
-    if (res.ok && data.berhasil) {
-      setUsers(data.users);
-    }
-    router.refresh();
-  }
-
-  function handleNewBufnChange(val: string) {
-    setNewBufn(val);
-    const list = getSmeltersForBufn(val);
-    setNewSmelter(list[0] || "");
-  }
-
-  function handleEditBufnChange(val: string) {
-    setEditBufn(val);
-    const list = getSmeltersForBufn(val);
-    setEditSmelter(list[0] || "");
-  }
-
-  async function handleAddUser(e: React.FormEvent) {
-    e.preventDefault();
-    setSubmitting(true);
-    setBanner(null);
-
-    try {
-      const effectiveBufn = isSuperAdmin ? newBufn : currentUser.bufn;
-      const res = await fetch("/api/admin/users", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          employeeId,
-          name,
-          role,
-          bufn: effectiveBufn,
-          smelter:
-            role === "admin" && !newSmelter
-              ? "Semua Smelter BUFN"
-              : newSmelter,
-          password,
-        }),
-      });
-
-      const data = await res.json();
-      if (!res.ok || !data.berhasil) {
-        setBanner({
-          type: "err",
-          text: data.pesan || "Gagal menambah pengguna.",
-        });
-        setSubmitting(false);
-        return;
-      }
-
-      setBanner({ type: "ok", text: data.pesan });
-      setEmployeeId("");
-      setName("");
-      setRole("safety_officer");
-      setPassword("");
-      setShowAddForm(false);
-      await reloadUsers();
-    } catch {
-      setBanner({ type: "err", text: "Gagal terhubung ke server." });
-    } finally {
-      setSubmitting(false);
-    }
-  }
-
-  function openEditModal(u: ManagedUser) {
-    setEditingUser(u);
-    setEditName(u.name);
-    setEditRole(u.role);
-    const initialB = isSuperAdmin ? u.bufn : currentUser.bufn;
-    setEditBufn(initialB);
-    const availableSmelters = getSmeltersForBufn(initialB);
-    setEditSmelter(
-      availableSmelters.includes(u.smelter)
-        ? u.smelter
-        : availableSmelters[0] || u.smelter
-    );
-    setNewPassword("");
-    setBanner(null);
-  }
-
-  async function handleSaveEdit(e: React.FormEvent) {
-    e.preventDefault();
-    if (!editingUser) return;
-    setSavingEdit(true);
-    setBanner(null);
-
-    try {
-      const effectiveBufn = isSuperAdmin ? editBufn : currentUser.bufn;
-      const res = await fetch(`/api/admin/users/${editingUser.uid}`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          name: editName,
-          role: editRole,
-          bufn: effectiveBufn,
-          smelter: editSmelter,
-          newPassword: newPassword.trim() || undefined,
-        }),
-      });
-
-      const data = await res.json();
-      if (!res.ok || !data.berhasil) {
-        setBanner({
-          type: "err",
-          text: data.pesan || "Gagal menyimpan perubahan.",
-        });
-        setSavingEdit(false);
-        return;
-      }
-
-      setBanner({
-        type: "ok",
-        text: newPassword.trim()
-          ? `Data & password baru untuk ${editName} berhasil disimpan.`
-          : `Data & lokasi tugas ${editName} berhasil diperbarui.`,
-      });
-      setEditingUser(null);
-      await reloadUsers();
-    } catch {
-      setBanner({ type: "err", text: "Gagal terhubung ke server." });
-    } finally {
-      setSavingEdit(false);
-    }
-  }
-
-  async function handleToggleActive(u: ManagedUser) {
-    const nextState = !u.isActive;
-    const konfirmasi = window.confirm(
-      nextState
-        ? `Aktifkan kembali akun ${u.name} (${u.employeeId})?`
-        : `Nonaktifkan akun ${u.name} (${u.employeeId})? Pengguna tidak akan bisa login.`
-    );
-    if (!konfirmasi) return;
-
-    setBanner(null);
-    try {
-      const res = await fetch(`/api/admin/users/${u.uid}`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ isActive: nextState }),
-      });
-
-      const data = await res.json();
-      if (!res.ok || !data.berhasil) {
-        setBanner({
-          type: "err",
-          text: data.pesan || "Gagal mengubah status akun.",
-        });
-        return;
-      }
-
-      setBanner({
-        type: "ok",
-        text: `Akun ${u.name} sekarang ${nextState ? "Aktif" : "Nonaktif"}.`,
-      });
-      await reloadUsers();
-    } catch {
-      setBanner({ type: "err", text: "Gagal terhubung ke server." });
-    }
-  }
-
-  // Fungsi Super Admin menambah Smelter baru atau BUFN baru
-  async function handlePersistWorkAreas(updatedAreas: BufnArea[], successMsg: string) {
-    setSavingAreas(true);
-    setBanner(null);
-    try {
-      const res = await fetch("/api/admin/work-areas", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ areas: updatedAreas }),
-      });
-      const data = await res.json();
-      if (!res.ok || !data.berhasil) {
-        setBanner({ type: "err", text: data.pesan || "Gagal menyimpan wilayah." });
-        setSavingAreas(false);
-        return;
-      }
-      setWorkAreas(data.areas);
-      setBanner({ type: "ok", text: successMsg });
-      router.refresh();
-    } catch {
-      setBanner({ type: "err", text: "Gagal terhubung ke server." });
-    } finally {
-      setSavingAreas(false);
-    }
-  }
-
-  async function handleAddSmelterToBufn(e: React.FormEvent) {
-    e.preventDefault();
-    const cleanSmelter = newSmelterName.trim();
-    if (!cleanSmelter) return;
-
-    const updated = workAreas.map((area) => {
-      if (area.name !== targetAreaForNewSmelter) return area;
-      if (area.smelters.includes(cleanSmelter)) return area;
-      return { ...area, smelters: [...area.smelters, cleanSmelter] };
-    });
-
-    await handlePersistWorkAreas(
-      updated,
-      `Lokasi "${cleanSmelter}" berhasil ditambahkan ke ${targetAreaForNewSmelter}.`
-    );
-    setNewSmelterName("");
-  }
-
-  async function handleAddNewBufn(e: React.FormEvent) {
-    e.preventDefault();
-    const cleanBufn = newBufnName.trim().toUpperCase();
-    if (!cleanBufn) return;
-    if (workAreas.some((a) => a.name.toUpperCase() === cleanBufn)) {
-      setBanner({ type: "err", text: `${cleanBufn} sudah ada.` });
-      return;
-    }
-
-    const updated: BufnArea[] = [
-      ...workAreas,
-      { id: cleanBufn, name: cleanBufn, smelters: [] },
-    ];
-    await handlePersistWorkAreas(updated, `Wilayah ${cleanBufn} berhasil ditambahkan.`);
-    setNewBufnName("");
-    setTargetAreaForNewSmelter(cleanBufn);
-  }
-
-  // Filter daftar pengguna di sisi client (instan untuk ratusan data)
-  const availableFilterSmelters =
+  const availableSmeltersForFilter =
     filterBufn === "ALL"
       ? Array.from(new Set(workAreas.flatMap((a) => a.smelters)))
-      : getSmeltersForBufn(filterBufn);
+      : workAreas.find((a) => a.name === filterBufn)?.smelters || [];
 
   const filteredUsers = users.filter((u) => {
     if (isSuperAdmin && filterBufn !== "ALL" && u.bufn !== filterBufn) {
@@ -334,10 +94,215 @@ export default function UsersManager({
     return (
       u.name.toLowerCase().includes(q) ||
       u.employeeId.toLowerCase().includes(q) ||
-      u.smelter.toLowerCase().includes(q) ||
-      u.bufn.toLowerCase().includes(q)
+      u.jobTitle.toLowerCase().includes(q) ||
+      u.bufn.toLowerCase().includes(q) ||
+      u.smelter.toLowerCase().includes(q)
     );
   });
+
+  async function reloadData() {
+    const [uRes, wRes] = await Promise.all([
+      fetch("/api/admin/users", { cache: "no-store" }),
+      fetch("/api/admin/work-areas", { cache: "no-store" }),
+    ]);
+    const uData = await uRes.json();
+    const wData = await wRes.json();
+    if (uRes.ok && uData.berhasil) setUsers(uData.users);
+    if (wRes.ok && wData.berhasil) setWorkAreas(wData.workAreas);
+    router.refresh();
+  }
+
+  function handleAddBufnChange(nextBufn: string) {
+    setBufn(nextBufn);
+    const list = workAreas.find((a) => a.name === nextBufn)?.smelters || [];
+    setSmelter(list[0] || "");
+  }
+
+  function handleJobTitleChange(nextJob: JobTitle) {
+    setJobTitle(nextJob);
+    if (nextJob === "Wakil Supervisor") {
+      setKpiCategory("wakil_spv");
+    } else if (kpiCategory === "wakil_spv") {
+      setKpiCategory("shift_3g2s");
+    }
+  }
+
+  async function handleCreateUser(e: React.FormEvent) {
+    e.preventDefault();
+    setSubmitting(true);
+    setBanner(null);
+
+    try {
+      const res = await fetch("/api/admin/users", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          employeeId,
+          name,
+          role: isSuperAdmin ? role : "safety_officer",
+          jobTitle,
+          kpiCategory,
+          bufn: isSuperAdmin ? bufn : currentUser.bufn,
+          smelter: role === "safety_officer" ? smelter : "ALL",
+          password,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.berhasil) {
+        setBanner({
+          type: "err",
+          text: data.pesan || "Gagal menambah pengguna.",
+        });
+        setSubmitting(false);
+        return;
+      }
+
+      setBanner({ type: "ok", text: data.pesan });
+      setEmployeeId("");
+      setName("");
+      setPassword("");
+      setShowAddForm(false);
+      await reloadData();
+    } catch {
+      setBanner({ type: "err", text: "Gagal terhubung ke server." });
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  async function handleAddSmelter(e: React.FormEvent) {
+    e.preventDefault();
+    setSavingSmelter(true);
+    setBanner(null);
+
+    try {
+      const res = await fetch("/api/admin/work-areas", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          bufnName: isSuperAdmin ? targetBufnSmelter : currentUser.bufn,
+          smelterName: newSmelterName,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.berhasil) {
+        setBanner({
+          type: "err",
+          text: data.pesan || "Gagal menambah smelter.",
+        });
+        setSavingSmelter(false);
+        return;
+      }
+
+      setBanner({ type: "ok", text: data.pesan });
+      setNewSmelterName("");
+      await reloadData();
+    } catch {
+      setBanner({ type: "err", text: "Gagal terhubung ke server." });
+    } finally {
+      setSavingSmelter(false);
+    }
+  }
+
+  function openEditModal(u: ManagedUser) {
+    setEditingUser(u);
+    setEditName(u.name);
+    setEditEmployeeId(u.employeeId);
+    setEditRole(u.role);
+    setEditJobTitle(u.jobTitle || "Safety Officer");
+    setEditKpiCategory(u.kpiCategory || "shift_3g2s");
+    setEditBufn(u.bufn === "ALL" ? defaultBufn : u.bufn);
+    const list =
+      workAreas.find(
+        (a) => a.name === (u.bufn === "ALL" ? defaultBufn : u.bufn)
+      )?.smelters || [];
+    setEditSmelter(
+      u.smelter && u.smelter !== "ALL" && u.smelter !== "-"
+        ? u.smelter
+        : list[0] || ""
+    );
+    setEditPassword("");
+    setBanner(null);
+  }
+
+  async function handleSaveEdit(e: React.FormEvent) {
+    e.preventDefault();
+    if (!editingUser) return;
+    setSavingEdit(true);
+    setBanner(null);
+
+    try {
+      const res = await fetch(`/api/admin/users/${editingUser.uid}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name: editName,
+          employeeId: editEmployeeId,
+          role: isSuperAdmin ? editRole : editingUser.role,
+          jobTitle: editJobTitle,
+          kpiCategory: editKpiCategory,
+          bufn: isSuperAdmin ? editBufn : currentUser.bufn,
+          smelter: editSmelter,
+          newPassword: editPassword || undefined,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.berhasil) {
+        setBanner({
+          type: "err",
+          text: data.pesan || "Gagal menyimpan perubahan.",
+        });
+        setSavingEdit(false);
+        return;
+      }
+
+      setBanner({ type: "ok", text: data.pesan });
+      setEditingUser(null);
+      await reloadData();
+    } catch {
+      setBanner({ type: "err", text: "Gagal terhubung ke server." });
+    } finally {
+      setSavingEdit(false);
+    }
+  }
+
+  async function handleToggleActive(u: ManagedUser) {
+    setBanner(null);
+    const res = await fetch(`/api/admin/users/${u.uid}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ isActive: !u.isActive }),
+    });
+    const data = await res.json();
+    if (!res.ok || !data.berhasil) {
+      setBanner({ type: "err", text: data.pesan || "Gagal mengubah status." });
+      return;
+    }
+    setBanner({
+      type: "ok",
+      text: `Status akun ${u.name} diubah menjadi ${!u.isActive ? "Aktif" : "Nonaktif"}.`,
+    });
+    await reloadData();
+  }
+
+  async function handleDeleteUser(u: ManagedUser) {
+    if (!window.confirm(`Yakin ingin menghapus akun ${u.name} (${u.employeeId})?`))
+      return;
+    setBanner(null);
+    const res = await fetch(`/api/admin/users/${u.uid}`, { method: "DELETE" });
+    const data = await res.json();
+    if (!res.ok || !data.berhasil) {
+      setBanner({ type: "err", text: data.pesan || "Gagal menghapus akun." });
+      return;
+    }
+    setBanner({ type: "ok", text: data.pesan });
+    await reloadData();
+  }
+
+  const addSmelterOptions =
+    workAreas.find((a) => a.name === bufn)?.smelters || [];
+  const editSmelterOptions =
+    workAreas.find((a) => a.name === editBufn)?.smelters || [];
 
   return (
     <div className="space-y-6">
@@ -353,75 +318,95 @@ export default function UsersManager({
         </div>
       )}
 
-      {/* Info Wilayah Kerja Aktif & Tombol Aksi */}
+      {/* Bar Filter & Tombol Aksi */}
       <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-[#495057] bg-[#2B3035] p-4">
-        <div>
-          <p className="text-xs text-slate-400">
-            Cakupan Wewenang:{" "}
-            <strong className="text-[#8BB3D6]">
-              {isSuperAdmin ? "Seluruh Area (BUFN 1 – BUFN 5)" : currentUser.bufn}
-            </strong>
-          </p>
-          <p className="text-sm font-semibold text-[#F1F3F5]">
-            Menampilkan {filteredUsers.length} dari {users.length} personel terdaftar
-          </p>
+        <div className="flex flex-1 flex-wrap items-center gap-2.5">
+          <input
+            type="text"
+            placeholder="Cari nama, ID, jabatan, atau smelter..."
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            className="w-full sm:w-64 rounded-lg border border-[#495057] bg-[#212529] px-3.5 py-2 text-sm text-[#F1F3F5] placeholder-slate-400 focus:border-[#5B7C99] focus:outline-none"
+          />
+
+          {isSuperAdmin && (
+            <select
+              value={filterBufn}
+              onChange={(e) => {
+                setFilterBufn(e.target.value);
+                setFilterSmelter("ALL");
+              }}
+              className="rounded-lg border border-[#495057] bg-[#212529] px-3 py-2 text-sm text-[#F1F3F5] focus:border-[#5B7C99] focus:outline-none"
+            >
+              <option value="ALL">Semua BUFN (1 – 5)</option>
+              {workAreas.map((area) => (
+                <option key={area.name} value={area.name}>
+                  {area.name}
+                </option>
+              ))}
+            </select>
+          )}
+
+          <select
+            value={filterSmelter}
+            onChange={(e) => setFilterSmelter(e.target.value)}
+            className="rounded-lg border border-[#495057] bg-[#212529] px-3 py-2 text-sm text-[#F1F3F5] focus:border-[#5B7C99] focus:outline-none"
+          >
+            <option value="ALL">Semua Smelter</option>
+            {availableSmeltersForFilter.map((s) => (
+              <option key={s} value={s}>
+                {s}
+              </option>
+            ))}
+          </select>
         </div>
 
         <div className="flex flex-wrap gap-2">
-          {isSuperAdmin && (
-            <button
-              type="button"
-              onClick={() => {
-                setShowAreaPanel((prev) => !prev);
-                setShowAddForm(false);
-                setBanner(null);
-              }}
-              className="rounded-lg border border-[#7A9278] bg-[#7A9278]/20 px-4 py-2 text-sm font-semibold text-[#C3DEC0] transition hover:bg-[#7A9278]/30"
-            >
-              {showAreaPanel ? "Tutup Panel Wilayah" : "Kelola BUFN & Smelter"}
-            </button>
-          )}
+          <button
+            type="button"
+            onClick={() => {
+              setShowSmelterPanel((prev) => !prev);
+              setShowAddForm(false);
+              setBanner(null);
+            }}
+            className="rounded-lg border border-[#495057] bg-[#212529] px-3.5 py-2 text-sm font-medium text-slate-200 transition hover:border-[#5B7C99]"
+          >
+            {showSmelterPanel ? "Tutup Kelola Smelter" : "+ Tambah Smelter"}
+          </button>
 
           <button
             type="button"
             onClick={() => {
               setShowAddForm((prev) => !prev);
-              setShowAreaPanel(false);
+              setShowSmelterPanel(false);
               setBanner(null);
             }}
             className="rounded-lg bg-[#5B7C99] px-4 py-2 text-sm font-semibold text-white transition hover:bg-[#45657F]"
           >
-            {showAddForm ? "Tutup Form" : "+ Tambah Anggota Baru"}
+            {showAddForm ? "Tutup Form" : "+ Tambah Personel"}
           </button>
         </div>
       </div>
 
-      {/* Panel Kelola BUFN & Smelter (Khusus Super Admin) */}
-      {isSuperAdmin && showAreaPanel && (
-        <div className="space-y-4 rounded-xl border border-[#7A9278]/50 bg-[#2B3035] p-5">
-          <div>
-            <h2 className="text-base font-semibold text-[#F1F3F5]">
-              Master Wilayah BUFN & Lokasi Smelter
-            </h2>
-            <p className="text-xs text-slate-400">
-              Tambahkan lokasi Smelter baru atau BUFN baru jika terdapat ekspansi operasional di PT IWIP.
-            </p>
-          </div>
-
-          <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-            {/* Tambah Smelter ke BUFN */}
-            <form
-              onSubmit={handleAddSmelterToBufn}
-              className="space-y-3 rounded-lg border border-[#495057] bg-[#212529] p-4"
-            >
-              <p className="text-xs font-semibold uppercase tracking-wider text-[#8BB3D6]">
-                Tambah Smelter / Nikelmatte Baru
-              </p>
-              <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+      {/* Panel Tambah Smelter Baru */}
+      {showSmelterPanel && (
+        <form
+          onSubmit={handleAddSmelter}
+          className="space-y-4 rounded-xl border border-[#7A9278]/50 bg-[#2B3035] p-5"
+        >
+          <h2 className="text-base font-semibold text-[#F1F3F5]">
+            Tambah Lokasi Smelter Baru
+          </h2>
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
+            <div>
+              <label className="mb-1 block text-xs font-medium text-slate-300">
+                Wilayah BUFN
+              </label>
+              {isSuperAdmin ? (
                 <select
-                  value={targetAreaForNewSmelter}
-                  onChange={(e) => setTargetAreaForNewSmelter(e.target.value)}
-                  className="rounded-lg border border-[#495057] bg-[#2B3035] px-3 py-2 text-sm text-[#F1F3F5]"
+                  value={targetBufnSmelter}
+                  onChange={(e) => setTargetBufnSmelter(e.target.value)}
+                  className="w-full rounded-lg border border-[#495057] bg-[#212529] px-3 py-2 text-sm text-[#F1F3F5]"
                 >
                   {workAreas.map((a) => (
                     <option key={a.name} value={a.name}>
@@ -429,80 +414,58 @@ export default function UsersManager({
                     </option>
                   ))}
                 </select>
-                <input
-                  type="text"
-                  required
-                  placeholder="Contoh: Smelter Y"
-                  value={newSmelterName}
-                  onChange={(e) => setNewSmelterName(e.target.value)}
-                  className="rounded-lg border border-[#495057] bg-[#2B3035] px-3 py-2 text-sm text-[#F1F3F5] placeholder-slate-500"
-                />
-              </div>
-              <button
-                type="submit"
-                disabled={savingAreas}
-                className="rounded-lg bg-[#7A9278] px-3.5 py-1.5 text-xs font-semibold text-white hover:bg-[#667D64] disabled:opacity-50"
-              >
-                {savingAreas ? "Menyimpan..." : "+ Tambah Smelter"}
-              </button>
-            </form>
+              ) : (
+                <div className="rounded-lg border border-[#495057] bg-[#212529]/60 px-3 py-2 text-sm text-slate-200">
+                  {currentUser.bufn}
+                </div>
+              )}
+            </div>
 
-            {/* Tambah BUFN Baru */}
-            <form
-              onSubmit={handleAddNewBufn}
-              className="space-y-3 rounded-lg border border-[#495057] bg-[#212529] p-4"
-            >
-              <p className="text-xs font-semibold uppercase tracking-wider text-[#8BB3D6]">
-                Tambah BUFN Baru
-              </p>
+            <div className="sm:col-span-2">
+              <label className="mb-1 block text-xs font-medium text-slate-300">
+                Nama Smelter Baru
+              </label>
               <input
                 type="text"
                 required
-                placeholder="Contoh: BUFN 6"
-                value={newBufnName}
-                onChange={(e) => setNewBufnName(e.target.value)}
-                className="w-full rounded-lg border border-[#495057] bg-[#2B3035] px-3 py-2 text-sm text-[#F1F3F5] placeholder-slate-500"
+                placeholder="Contoh: Smelter U / Nikelmatte Line 2"
+                value={newSmelterName}
+                onChange={(e) => setNewSmelterName(e.target.value)}
+                className="w-full rounded-lg border border-[#495057] bg-[#212529] px-3 py-2 text-sm text-[#F1F3F5] placeholder-slate-500"
               />
-              <button
-                type="submit"
-                disabled={savingAreas}
-                className="rounded-lg bg-[#5B7C99] px-3.5 py-1.5 text-xs font-semibold text-white hover:bg-[#45657F] disabled:opacity-50"
-              >
-                {savingAreas ? "Menyimpan..." : "+ Tambah BUFN"}
-              </button>
-            </form>
+            </div>
           </div>
 
-          {/* Ringkasan Daftar BUFN & Smelter Saat Ini */}
-          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
-            {workAreas.map((area) => (
-              <div
-                key={area.name}
-                className="rounded-lg border border-[#495057]/70 bg-[#212529]/70 p-3"
-              >
-                <p className="text-xs font-bold text-[#8BB3D6]">{area.name}</p>
-                <p className="mt-1 text-xs text-slate-300">
-                  {area.smelters.length > 0
-                    ? area.smelters.join(", ")
-                    : "Belum ada smelter"}
-                </p>
-              </div>
-            ))}
+          <div className="flex justify-end gap-2">
+            <button
+              type="button"
+              onClick={() => setShowSmelterPanel(false)}
+              className="rounded-lg border border-[#495057] bg-[#212529] px-4 py-2 text-sm text-slate-300"
+            >
+              Batal
+            </button>
+            <button
+              type="submit"
+              disabled={savingSmelter}
+              className="rounded-lg bg-[#7A9278] px-4 py-2 text-sm font-semibold text-white hover:bg-[#667D64] disabled:opacity-50"
+            >
+              {savingSmelter ? "Menyimpan..." : "Simpan Smelter"}
+            </button>
           </div>
-        </div>
+        </form>
       )}
 
-      {/* Form Tambah Anggota Baru */}
+      {/* Form Tambah Pengguna Baru */}
       {showAddForm && (
         <form
-          onSubmit={handleAddUser}
+          onSubmit={handleCreateUser}
           className="space-y-4 rounded-xl border border-[#5B7C99]/50 bg-[#2B3035] p-5"
         >
           <h2 className="text-base font-semibold text-[#F1F3F5]">
-            Tambah Akun Personel Baru
+            Tambah Personel Baru
           </h2>
 
-          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
             <div>
               <label className="mb-1 block text-xs font-medium text-slate-300">
                 ID Karyawan
@@ -510,10 +473,10 @@ export default function UsersManager({
               <input
                 type="text"
                 required
-                placeholder="Contoh: 8221026045"
+                placeholder="Contoh: 82120"
                 value={employeeId}
                 onChange={(e) => setEmployeeId(e.target.value)}
-                className="w-full rounded-lg border border-[#495057] bg-[#212529] px-3 py-2 text-sm text-[#F1F3F5] placeholder-slate-500 focus:border-[#5B7C99] focus:outline-none"
+                className="w-full rounded-lg border border-[#495057] bg-[#212529] px-3 py-2 text-sm text-[#F1F3F5] placeholder-slate-500"
               />
             </div>
 
@@ -524,90 +487,137 @@ export default function UsersManager({
               <input
                 type="text"
                 required
-                placeholder="Nama lengkap Safety Officer / Admin BUFN"
+                placeholder="Nama lengkap"
                 value={name}
                 onChange={(e) => setName(e.target.value)}
-                className="w-full rounded-lg border border-[#495057] bg-[#212529] px-3 py-2 text-sm text-[#F1F3F5] placeholder-slate-500 focus:border-[#5B7C99] focus:outline-none"
+                className="w-full rounded-lg border border-[#495057] bg-[#212529] px-3 py-2 text-sm text-[#F1F3F5] placeholder-slate-500"
               />
             </div>
 
             <div>
               <label className="mb-1 block text-xs font-medium text-slate-300">
-                Peran (Role)
-              </label>
-              <select
-                value={role}
-                onChange={(e) => setRole(e.target.value as UserRole)}
-                className="w-full rounded-lg border border-[#495057] bg-[#212529] px-3 py-2 text-sm text-[#F1F3F5] focus:border-[#5B7C99] focus:outline-none"
-              >
-                <option value="safety_officer">Safety Officer</option>
-                {isSuperAdmin && <option value="admin">Admin BUFN</option>}
-              </select>
-            </div>
-
-            <div>
-              <label className="mb-1 block text-xs font-medium text-slate-300">
-                Wilayah BUFN
-              </label>
-              {isSuperAdmin ? (
-                <select
-                  value={newBufn}
-                  onChange={(e) => handleNewBufnChange(e.target.value)}
-                  className="w-full rounded-lg border border-[#495057] bg-[#212529] px-3 py-2 text-sm text-[#F1F3F5] focus:border-[#5B7C99] focus:outline-none"
-                >
-                  {workAreas.map((a) => (
-                    <option key={a.name} value={a.name}>
-                      {a.name}
-                    </option>
-                  ))}
-                </select>
-              ) : (
-                <input
-                  type="text"
-                  disabled
-                  value={currentUser.bufn}
-                  className="w-full rounded-lg border border-[#495057] bg-[#212529]/60 px-3 py-2 text-sm text-slate-400"
-                />
-              )}
-            </div>
-
-            <div>
-              <label className="mb-1 block text-xs font-medium text-slate-300">
-                Lokasi Smelter / Nikelmatte
-              </label>
-              <select
-                required={role === "safety_officer"}
-                value={newSmelter}
-                onChange={(e) => setNewSmelter(e.target.value)}
-                className="w-full rounded-lg border border-[#495057] bg-[#212529] px-3 py-2 text-sm text-[#F1F3F5] focus:border-[#5B7C99] focus:outline-none"
-              >
-                {role === "admin" && (
-                  <option value="Semua Smelter BUFN">Semua Smelter BUFN</option>
-                )}
-                {getSmeltersForBufn(
-                  isSuperAdmin ? newBufn : currentUser.bufn
-                ).map((s) => (
-                  <option key={s} value={s}>
-                    {s}
-                  </option>
-                ))}
-              </select>
-            </div>
-
-            <div>
-              <label className="mb-1 block text-xs font-medium text-slate-300">
-                Password Awal (minimal 6 karakter)
+                Password Awal
               </label>
               <input
                 type="password"
                 required
-                minLength={6}
-                placeholder="Minimal 6 karakter"
+                minLength={4}
+                placeholder="Minimal 4 karakter"
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
-                className="w-full rounded-lg border border-[#495057] bg-[#212529] px-3 py-2 text-sm text-[#F1F3F5] placeholder-slate-500 focus:border-[#5B7C99] focus:outline-none"
+                className="w-full rounded-lg border border-[#495057] bg-[#212529] px-3 py-2 text-sm text-[#F1F3F5] placeholder-slate-500"
               />
             </div>
+
+            {isSuperAdmin && (
+              <div>
+                <label className="mb-1 block text-xs font-medium text-slate-300">
+                  Hak Akses Sistem
+                </label>
+                <select
+                  value={role}
+                  onChange={(e) => setRole(e.target.value as UserRole)}
+                  className="w-full rounded-lg border border-[#495057] bg-[#212529] px-3 py-2 text-sm text-[#F1F3F5]"
+                >
+                  <option value="safety_officer">Personel Lapangan / Wakil SPV</option>
+                  <option value="admin">Admin BUFN (Penilai Wilayah)</option>
+                  <option value="super_admin">Super Admin (Comprehensive HSE)</option>
+                </select>
+              </div>
+            )}
+
+            {role === "safety_officer" && (
+              <>
+                <div>
+                  <label className="mb-1 block text-xs font-medium text-slate-300">
+                    Jabatan Fungsional
+                  </label>
+                  <select
+                    value={jobTitle}
+                    onChange={(e) =>
+                      handleJobTitleChange(e.target.value as JobTitle)
+                    }
+                    className="w-full rounded-lg border border-[#495057] bg-[#212529] px-3 py-2 text-sm text-[#F1F3F5]"
+                  >
+                    {JOB_TITLES.map((j) => (
+                      <option key={j} value={j}>
+                        {j}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <div>
+                  <label className="mb-1 block text-xs font-medium text-slate-300">
+                    Kategori Pola Kerja KPI
+                  </label>
+                  {jobTitle === "Wakil Supervisor" ? (
+                    <div className="rounded-lg border border-[#495057] bg-[#212529]/60 px-3 py-2 text-sm font-medium text-amber-300">
+                      Otomatis: Wakil Supervisor
+                    </div>
+                  ) : (
+                    <select
+                      value={kpiCategory}
+                      onChange={(e) =>
+                        setKpiCategory(e.target.value as KpiCategory)
+                      }
+                      className="w-full rounded-lg border border-[#495057] bg-[#212529] px-3 py-2 text-sm text-[#F1F3F5]"
+                    >
+                      <option value="shift_3g2s">
+                        {KPI_CATEGORY_LABELS.shift_3g2s}
+                      </option>
+                      <option value="non_shift">
+                        {KPI_CATEGORY_LABELS.non_shift}
+                      </option>
+                    </select>
+                  )}
+                </div>
+              </>
+            )}
+
+            {role !== "super_admin" && (
+              <div>
+                <label className="mb-1 block text-xs font-medium text-slate-300">
+                  Wilayah BUFN
+                </label>
+                {isSuperAdmin ? (
+                  <select
+                    value={bufn}
+                    onChange={(e) => handleAddBufnChange(e.target.value)}
+                    className="w-full rounded-lg border border-[#495057] bg-[#212529] px-3 py-2 text-sm text-[#F1F3F5]"
+                  >
+                    {workAreas.map((a) => (
+                      <option key={a.name} value={a.name}>
+                        {a.name}
+                      </option>
+                    ))}
+                  </select>
+                ) : (
+                  <div className="rounded-lg border border-[#495057] bg-[#212529]/60 px-3 py-2 text-sm text-slate-200">
+                    {currentUser.bufn}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {role === "safety_officer" && (
+              <div>
+                <label className="mb-1 block text-xs font-medium text-slate-300">
+                  Lokasi Smelter
+                </label>
+                <select
+                  value={smelter}
+                  onChange={(e) => setSmelter(e.target.value)}
+                  className="w-full rounded-lg border border-[#495057] bg-[#212529] px-3 py-2 text-sm text-[#F1F3F5]"
+                >
+                  {addSmelterOptions.map((s) => (
+                    <option key={s} value={s}>
+                      {s}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
           </div>
 
           <div className="flex justify-end gap-2 pt-2">
@@ -629,131 +639,98 @@ export default function UsersManager({
         </form>
       )}
 
-      {/* Bar Filter Pencarian, BUFN, dan Smelter */}
-      <div className="grid grid-cols-1 gap-3 rounded-xl border border-[#495057] bg-[#2B3035] p-4 sm:grid-cols-3">
-        <input
-          type="text"
-          placeholder="Cari nama atau ID Karyawan..."
-          value={search}
-          onChange={(e) => setSearch(e.target.value)}
-          className="rounded-lg border border-[#495057] bg-[#212529] px-3.5 py-2 text-sm text-[#F1F3F5] placeholder-slate-500 focus:border-[#5B7C99] focus:outline-none"
-        />
-
-        {isSuperAdmin ? (
-          <select
-            value={filterBufn}
-            onChange={(e) => {
-              setFilterBufn(e.target.value);
-              setFilterSmelter("ALL");
-            }}
-            className="rounded-lg border border-[#495057] bg-[#212529] px-3 py-2 text-sm text-[#F1F3F5] focus:border-[#5B7C99] focus:outline-none"
-          >
-            <option value="ALL">Semua BUFN (BUFN 1 – 5)</option>
-            {workAreas.map((a) => (
-              <option key={a.name} value={a.name}>
-                {a.name}
-              </option>
-            ))}
-          </select>
-        ) : (
-          <div className="rounded-lg border border-[#495057] bg-[#212529]/60 px-3 py-2 text-sm text-slate-300">
-            Wilayah: <strong>{currentUser.bufn}</strong>
-          </div>
-        )}
-
-        <select
-          value={filterSmelter}
-          onChange={(e) => setFilterSmelter(e.target.value)}
-          className="rounded-lg border border-[#495057] bg-[#212529] px-3 py-2 text-sm text-[#F1F3F5] focus:border-[#5B7C99] focus:outline-none"
-        >
-          <option value="ALL">Semua Lokasi Smelter</option>
-          {availableFilterSmelters.map((s) => (
-            <option key={s} value={s}>
-              {s}
-            </option>
-          ))}
-        </select>
-      </div>
-
-      {/* Tabel Desktop */}
-      <div className="hidden md:block overflow-hidden rounded-xl border border-[#495057] bg-[#2B3035]">
-        <table className="w-full text-left text-sm">
-          <thead className="border-b border-[#495057] bg-[#212529]/70 text-xs uppercase text-slate-400">
-            <tr>
+      {/* Tabel Pengguna */}
+      <div className="overflow-x-auto rounded-xl border border-[#495057] bg-[#2B3035]">
+        <table className="w-full border-collapse text-left text-sm">
+          <thead>
+            <tr className="border-b border-[#495057] bg-[#212529]/70 text-xs uppercase text-slate-400">
               <th className="px-4 py-3">ID Karyawan</th>
-              <th className="px-4 py-3">Nama Lengkap</th>
-              <th className="px-4 py-3">BUFN</th>
-              <th className="px-4 py-3">Lokasi Smelter</th>
-              <th className="px-4 py-3">Peran</th>
+              <th className="px-4 py-3">Nama & Jabatan</th>
+              <th className="px-4 py-3">Kategori KPI</th>
+              <th className="px-4 py-3">BUFN & Smelter</th>
               <th className="px-4 py-3">Status</th>
-              <th className="px-4 py-3 text-right">Aksi</th>
+              <th className="px-4 py-3 text-right">Aksi / Mutasi</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-[#495057]/60">
             {filteredUsers.map((u) => (
               <tr key={u.uid} className="hover:bg-[#212529]/40">
-                <td className="px-4 py-3 font-mono text-xs text-slate-200">
+                <td className="px-4 py-3 font-mono text-xs text-slate-300">
                   {u.employeeId}
                 </td>
-                <td className="px-4 py-3 font-medium text-[#F1F3F5]">
-                  {u.name}
-                </td>
-                <td className="px-4 py-3 text-xs font-semibold text-[#8BB3D6]">
-                  {u.bufn}
-                </td>
-                <td className="px-4 py-3 text-slate-200">{u.smelter}</td>
                 <td className="px-4 py-3">
-                  <span
-                    className={`rounded px-2 py-0.5 text-xs font-medium ${
-                      u.role === "super_admin"
-                        ? "bg-[#7A9278]/25 text-[#A3BE9F]"
-                        : u.role === "admin"
-                          ? "bg-[#5B7C99]/25 text-[#8BB3D6]"
-                          : "bg-slate-700/60 text-slate-200"
-                    }`}
-                  >
-                    {formatRole(u.role)}
-                  </span>
+                  <div className="font-medium text-[#F1F3F5]">{u.name}</div>
+                  <div className="mt-0.5 text-xs text-slate-400">
+                    {u.role === "super_admin"
+                      ? "Super Admin"
+                      : u.role === "admin"
+                        ? "Admin BUFN"
+                        : u.jobTitle}
+                  </div>
                 </td>
                 <td className="px-4 py-3">
-                  <span
-                    className={`inline-flex items-center gap-1.5 text-xs font-medium ${
-                      u.isActive ? "text-emerald-400" : "text-red-400"
-                    }`}
-                  >
+                  {u.role === "safety_officer" ? (
                     <span
-                      className={`h-2 w-2 rounded-full ${
-                        u.isActive ? "bg-emerald-400" : "bg-red-400"
+                      className={`rounded px-2 py-0.5 text-xs font-medium ${
+                        u.kpiCategory === "wakil_spv"
+                          ? "bg-amber-500/20 text-amber-300"
+                          : u.kpiCategory === "non_shift"
+                            ? "bg-purple-500/20 text-purple-300"
+                            : "bg-[#5B7C99]/20 text-[#8BB3D6]"
                       }`}
-                    />
-                    {u.isActive ? "Aktif" : "Nonaktif"}
-                  </span>
+                    >
+                      {KPI_CATEGORY_LABELS[u.kpiCategory]}
+                    </span>
+                  ) : (
+                    <span className="text-xs text-slate-500">—</span>
+                  )}
+                </td>
+                <td className="px-4 py-3 text-slate-300">
+                  {u.role === "super_admin"
+                    ? "Semua BUFN & Smelter"
+                    : u.role === "admin"
+                      ? `${u.bufn} (Semua Smelter)`
+                      : `${u.bufn} • ${u.smelter}`}
+                </td>
+                <td className="px-4 py-3">
+                  {u.isActive ? (
+                    <span className="rounded bg-emerald-500/15 px-2 py-0.5 text-xs text-emerald-300">
+                      Aktif
+                    </span>
+                  ) : (
+                    <span className="rounded bg-red-500/15 px-2 py-0.5 text-xs text-red-300">
+                      Nonaktif
+                    </span>
+                  )}
                 </td>
                 <td className="px-4 py-3 text-right">
-                  {canManage(u) ? (
-                    <div className="inline-flex items-center gap-2">
-                      <button
-                        type="button"
-                        onClick={() => openEditModal(u)}
-                        className="rounded border border-[#495057] bg-[#212529] px-2.5 py-1 text-xs font-medium text-slate-200 hover:border-[#5B7C99] hover:text-white"
-                      >
-                        Edit / Mutasi Smelter
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => handleToggleActive(u)}
-                        className={`rounded border px-2.5 py-1 text-xs font-medium ${
-                          u.isActive
-                            ? "border-red-500/40 text-red-300 hover:bg-red-950/50"
-                            : "border-emerald-500/40 text-emerald-300 hover:bg-emerald-950/50"
-                        }`}
-                      >
-                        {u.isActive ? "Nonaktifkan" : "Aktifkan"}
-                      </button>
-                    </div>
-                  ) : (
-                    <span className="text-xs text-slate-500">Terproteksi</span>
-                  )}
+                  <div className="inline-flex flex-wrap justify-end gap-1.5">
+                    <button
+                      type="button"
+                      onClick={() => openEditModal(u)}
+                      className="rounded border border-[#495057] bg-[#212529] px-2.5 py-1 text-xs font-medium text-slate-200 hover:border-[#5B7C99]"
+                    >
+                      Edit / Mutasi
+                    </button>
+                    {u.uid !== currentUser.uid && (
+                      <>
+                        <button
+                          type="button"
+                          onClick={() => handleToggleActive(u)}
+                          className="rounded border border-[#495057] bg-[#212529] px-2.5 py-1 text-xs font-medium text-slate-300 hover:text-white"
+                        >
+                          {u.isActive ? "Nonaktifkan" : "Aktifkan"}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleDeleteUser(u)}
+                          className="rounded border border-red-500/40 px-2.5 py-1 text-xs font-medium text-red-300 hover:bg-red-950/50"
+                        >
+                          Hapus
+                        </button>
+                      </>
+                    )}
+                  </div>
                 </td>
               </tr>
             ))}
@@ -761,10 +738,10 @@ export default function UsersManager({
             {filteredUsers.length === 0 && (
               <tr>
                 <td
-                  colSpan={7}
+                  colSpan={6}
                   className="px-4 py-8 text-center text-sm text-slate-400"
                 >
-                  Tidak ada anggota yang sesuai dengan filter wilayah/pencarian.
+                  Tidak ada data pengguna yang sesuai dengan filter.
                 </td>
               </tr>
             )}
@@ -772,183 +749,185 @@ export default function UsersManager({
         </table>
       </div>
 
-      {/* Tampilan Kartu Mobile */}
-      <div className="space-y-3 md:hidden">
-        {filteredUsers.map((u) => (
-          <div
-            key={u.uid}
-            className="rounded-xl border border-[#495057] bg-[#2B3035] p-4 space-y-3"
-          >
-            <div className="flex items-start justify-between gap-2">
-              <div>
-                <p className="font-semibold text-[#F1F3F5]">{u.name}</p>
-                <p className="font-mono text-xs text-slate-400">
-                  ID: {u.employeeId}
-                </p>
-                <p className="mt-1 text-xs text-[#8BB3D6]">
-                  {u.bufn} • {u.smelter}
-                </p>
-              </div>
-              <span
-                className={`rounded px-2 py-0.5 text-xs font-medium ${
-                  u.isActive
-                    ? "bg-emerald-500/15 text-emerald-300"
-                    : "bg-red-500/15 text-red-300"
-                }`}
-              >
-                {u.isActive ? "Aktif" : "Nonaktif"}
-              </span>
-            </div>
-
-            <div className="flex items-center justify-between border-t border-[#495057]/60 pt-3">
-              <span className="text-xs font-medium text-slate-300">
-                {formatRole(u.role)}
-              </span>
-
-              {canManage(u) ? (
-                <div className="flex gap-2">
-                  <button
-                    type="button"
-                    onClick={() => openEditModal(u)}
-                    className="rounded border border-[#495057] bg-[#212529] px-2.5 py-1 text-xs text-slate-200"
-                  >
-                    Edit / Mutasi
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => handleToggleActive(u)}
-                    className={`rounded border px-2.5 py-1 text-xs ${
-                      u.isActive
-                        ? "border-red-500/40 text-red-300"
-                        : "border-emerald-500/40 text-emerald-300"
-                    }`}
-                  >
-                    {u.isActive ? "Nonaktifkan" : "Aktifkan"}
-                  </button>
-                </div>
-              ) : (
-                <span className="text-xs text-slate-500">Terproteksi</span>
-              )}
-            </div>
-          </div>
-        ))}
-      </div>
-
-      {/* Modal Edit Profil, Mutasi Smelter & Reset Password */}
+      {/* Modal Edit & Mutasi Lokasi / Jabatan */}
       {editingUser && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4">
           <form
             onSubmit={handleSaveEdit}
-            className="w-full max-w-md space-y-4 rounded-xl border border-[#495057] bg-[#2B3035] p-6 shadow-xl"
+            className="w-full max-w-lg space-y-4 rounded-xl border border-[#495057] bg-[#2B3035] p-6 shadow-xl"
           >
-            <div>
-              <h3 className="text-lg font-bold text-[#F1F3F5]">
-                Edit Anggota & Mutasi Lokasi Smelter
-              </h3>
-              <p className="font-mono text-xs text-slate-400">
-                ID Karyawan: {editingUser.employeeId}
-              </p>
-            </div>
+            <h3 className="text-lg font-bold text-[#F1F3F5]">
+              Edit & Mutasi: {editingUser.name}
+            </h3>
 
-            <div>
-              <label className="mb-1 block text-xs font-medium text-slate-300">
-                Nama Lengkap
-              </label>
-              <input
-                type="text"
-                required
-                value={editName}
-                onChange={(e) => setEditName(e.target.value)}
-                className="w-full rounded-lg border border-[#495057] bg-[#212529] px-3 py-2 text-sm text-[#F1F3F5] focus:border-[#5B7C99] focus:outline-none"
-              />
-            </div>
-
-            {isSuperAdmin && (
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
               <div>
                 <label className="mb-1 block text-xs font-medium text-slate-300">
-                  Peran (Role)
+                  ID Karyawan
                 </label>
-                <select
-                  value={editRole}
-                  onChange={(e) => setEditRole(e.target.value as UserRole)}
-                  className="w-full rounded-lg border border-[#495057] bg-[#212529] px-3 py-2 text-sm text-[#F1F3F5] focus:border-[#5B7C99] focus:outline-none"
-                >
-                  <option value="safety_officer">Safety Officer</option>
-                  <option value="admin">Admin BUFN</option>
-                </select>
-              </div>
-            )}
-
-            <div>
-              <label className="mb-1 block text-xs font-medium text-slate-300">
-                Wilayah BUFN{" "}
-                {!isSuperAdmin && (
-                  <span className="text-slate-500">(Terkunci sesuai BUFN Anda)</span>
-                )}
-              </label>
-              {isSuperAdmin ? (
-                <select
-                  value={editBufn}
-                  onChange={(e) => handleEditBufnChange(e.target.value)}
-                  className="w-full rounded-lg border border-[#495057] bg-[#212529] px-3 py-2 text-sm text-[#F1F3F5] focus:border-[#5B7C99] focus:outline-none"
-                >
-                  {workAreas.map((a) => (
-                    <option key={a.name} value={a.name}>
-                      {a.name}
-                    </option>
-                  ))}
-                </select>
-              ) : (
                 <input
                   type="text"
-                  disabled
-                  value={currentUser.bufn}
-                  className="w-full rounded-lg border border-[#495057] bg-[#212529]/60 px-3 py-2 text-sm text-slate-400"
+                  required
+                  value={editEmployeeId}
+                  onChange={(e) => setEditEmployeeId(e.target.value)}
+                  className="w-full rounded-lg border border-[#495057] bg-[#212529] px-3 py-2 text-sm text-[#F1F3F5]"
                 />
+              </div>
+
+              <div>
+                <label className="mb-1 block text-xs font-medium text-slate-300">
+                  Nama Lengkap
+                </label>
+                <input
+                  type="text"
+                  required
+                  value={editName}
+                  onChange={(e) => setEditName(e.target.value)}
+                  className="w-full rounded-lg border border-[#495057] bg-[#212529] px-3 py-2 text-sm text-[#F1F3F5]"
+                />
+              </div>
+
+              {isSuperAdmin && (
+                <div className="sm:col-span-2">
+                  <label className="mb-1 block text-xs font-medium text-slate-300">
+                    Hak Akses Sistem
+                  </label>
+                  <select
+                    value={editRole}
+                    onChange={(e) => setEditRole(e.target.value as UserRole)}
+                    className="w-full rounded-lg border border-[#495057] bg-[#212529] px-3 py-2 text-sm text-[#F1F3F5]"
+                  >
+                    <option value="safety_officer">Personel Lapangan / Wakil SPV</option>
+                    <option value="admin">Admin BUFN</option>
+                    <option value="super_admin">Super Admin</option>
+                  </select>
+                </div>
               )}
-            </div>
 
-            <div>
-              <label className="mb-1 block text-xs font-medium text-slate-300">
-                Lokasi Smelter (dalam {isSuperAdmin ? editBufn : currentUser.bufn})
-              </label>
-              <select
-                value={editSmelter}
-                onChange={(e) => setEditSmelter(e.target.value)}
-                className="w-full rounded-lg border border-[#495057] bg-[#212529] px-3 py-2 text-sm text-[#F1F3F5] focus:border-[#5B7C99] focus:outline-none"
-              >
-                {editRole === "admin" && (
-                  <option value="Semua Smelter BUFN">Semua Smelter BUFN</option>
-                )}
-                {getSmeltersForBufn(
-                  isSuperAdmin ? editBufn : currentUser.bufn
-                ).map((s) => (
-                  <option key={s} value={s}>
-                    {s}
-                  </option>
-                ))}
-              </select>
-            </div>
+              {editRole === "safety_officer" && (
+                <>
+                  <div>
+                    <label className="mb-1 block text-xs font-medium text-slate-300">
+                      Jabatan Fungsional
+                    </label>
+                    <select
+                      value={editJobTitle}
+                      onChange={(e) => {
+                        const j = e.target.value as JobTitle;
+                        setEditJobTitle(j);
+                        if (j === "Wakil Supervisor") {
+                          setEditKpiCategory("wakil_spv");
+                        } else if (editKpiCategory === "wakil_spv") {
+                          setEditKpiCategory("shift_3g2s");
+                        }
+                      }}
+                      className="w-full rounded-lg border border-[#495057] bg-[#212529] px-3 py-2 text-sm text-[#F1F3F5]"
+                    >
+                      {JOB_TITLES.map((j) => (
+                        <option key={j} value={j}>
+                          {j}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
 
-            <div>
-              <label className="mb-1 block text-xs font-medium text-slate-300">
-                Reset Password (kosongkan jika tidak diubah)
-              </label>
-              <input
-                type="password"
-                minLength={6}
-                placeholder="Isi minimal 6 karakter untuk reset password"
-                value={newPassword}
-                onChange={(e) => setNewPassword(e.target.value)}
-                className="w-full rounded-lg border border-[#495057] bg-[#212529] px-3 py-2 text-sm text-[#F1F3F5] placeholder-slate-500 focus:border-[#5B7C99] focus:outline-none"
-              />
+                  <div>
+                    <label className="mb-1 block text-xs font-medium text-slate-300">
+                      Kategori Pola KPI
+                    </label>
+                    {editJobTitle === "Wakil Supervisor" ? (
+                      <div className="rounded-lg border border-[#495057] bg-[#212529]/60 px-3 py-2 text-sm text-amber-300">
+                        Wakil Supervisor
+                      </div>
+                    ) : (
+                      <select
+                        value={editKpiCategory}
+                        onChange={(e) =>
+                          setEditKpiCategory(e.target.value as KpiCategory)
+                        }
+                        className="w-full rounded-lg border border-[#495057] bg-[#212529] px-3 py-2 text-sm text-[#F1F3F5]"
+                      >
+                        <option value="shift_3g2s">
+                          {KPI_CATEGORY_LABELS.shift_3g2s}
+                        </option>
+                        <option value="non_shift">
+                          {KPI_CATEGORY_LABELS.non_shift}
+                        </option>
+                      </select>
+                    )}
+                  </div>
+                </>
+              )}
+
+              {editRole !== "super_admin" && (
+                <div>
+                  <label className="mb-1 block text-xs font-medium text-slate-300">
+                    Wilayah BUFN
+                  </label>
+                  {isSuperAdmin ? (
+                    <select
+                      value={editBufn}
+                      onChange={(e) => {
+                        const nb = e.target.value;
+                        setEditBufn(nb);
+                        const list =
+                          workAreas.find((a) => a.name === nb)?.smelters || [];
+                        setEditSmelter(list[0] || "");
+                      }}
+                      className="w-full rounded-lg border border-[#495057] bg-[#212529] px-3 py-2 text-sm text-[#F1F3F5]"
+                    >
+                      {workAreas.map((a) => (
+                        <option key={a.name} value={a.name}>
+                          {a.name}
+                        </option>
+                      ))}
+                    </select>
+                  ) : (
+                    <div className="rounded-lg border border-[#495057] bg-[#212529]/60 px-3 py-2 text-sm text-slate-200">
+                      {currentUser.bufn}
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {editRole === "safety_officer" && (
+                <div>
+                  <label className="mb-1 block text-xs font-medium text-slate-300">
+                    Mutasi Lokasi Smelter
+                  </label>
+                  <select
+                    value={editSmelter}
+                    onChange={(e) => setEditSmelter(e.target.value)}
+                    className="w-full rounded-lg border border-[#495057] bg-[#212529] px-3 py-2 text-sm text-[#F1F3F5]"
+                  >
+                    {editSmelterOptions.map((s) => (
+                      <option key={s} value={s}>
+                        {s}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              )}
+
+              <div className="sm:col-span-2">
+                <label className="mb-1 block text-xs font-medium text-slate-300">
+                  Reset Password Baru (kosongkan jika tidak diubah)
+                </label>
+                <input
+                  type="password"
+                  placeholder="Password baru minimal 4 karakter"
+                  value={editPassword}
+                  onChange={(e) => setEditPassword(e.target.value)}
+                  className="w-full rounded-lg border border-[#495057] bg-[#212529] px-3 py-2 text-sm text-[#F1F3F5] placeholder-slate-500"
+                />
+              </div>
             </div>
 
             <div className="flex justify-end gap-2 pt-2">
               <button
                 type="button"
                 onClick={() => setEditingUser(null)}
-                className="rounded-lg border border-[#495057] bg-[#212529] px-4 py-2 text-sm text-slate-300 hover:text-white"
+                className="rounded-lg border border-[#495057] bg-[#212529] px-4 py-2 text-sm text-slate-300"
               >
                 Batal
               </button>

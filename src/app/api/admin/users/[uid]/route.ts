@@ -1,12 +1,18 @@
 import { NextResponse } from "next/server";
 import {
+  firestoreDeleteDoc,
   firestoreGetDoc,
   firestoreSetDoc,
-  updateFirebaseAuthAccount,
   type FirestoreValue,
 } from "@/lib/firebase-admin";
+import { hashPassword } from "@/lib/password";
 import { getCurrentUser, type UserRole } from "@/lib/session";
-import { getWorkAreas, isValidSmelterInBufn } from "@/lib/work-areas";
+import {
+  JOB_TITLES,
+  KPI_CATEGORIES,
+  type JobTitle,
+  type KpiCategory,
+} from "@/lib/work-areas";
 
 export async function PATCH(
   request: Request,
@@ -15,7 +21,7 @@ export async function PATCH(
   const currentUser = await getCurrentUser();
   if (
     !currentUser ||
-    (currentUser.role !== "super_admin" && currentUser.role !== "admin")
+    (currentUser.role !== "admin" && currentUser.role !== "super_admin")
   ) {
     return NextResponse.json(
       { berhasil: false, pesan: "Akses ditolak." },
@@ -25,39 +31,25 @@ export async function PATCH(
 
   try {
     const { uid } = await context.params;
-    const targetDoc = await firestoreGetDoc("users", uid);
-    if (!targetDoc || !targetDoc.fields) {
+    const existingDoc = await firestoreGetDoc("users", uid);
+    if (!existingDoc?.fields) {
       return NextResponse.json(
         { berhasil: false, pesan: "Pengguna tidak ditemukan." },
         { status: 404 }
       );
     }
 
-    const f = targetDoc.fields;
-    const targetRole = (f.role?.stringValue || "safety_officer") as UserRole;
-    const currentTargetBufn = f.bufn?.stringValue || "BUFN 1";
-    const currentTargetSmelter = f.smelter?.stringValue || "-";
+    const existingFields = existingDoc.fields;
+    const targetRole = (existingFields.role?.stringValue ||
+      "safety_officer") as UserRole;
+    const targetBufn = existingFields.bufn?.stringValue || "BUFN 1";
 
-    if (targetRole === "super_admin") {
-      return NextResponse.json(
-        { berhasil: false, pesan: "Akun Super Admin tidak dapat diubah dari menu ini." },
-        { status: 403 }
-      );
-    }
-
-    // Isolasi ketat Admin BUFN: hanya boleh mengelola Safety Officer di BUFN-nya sendiri
     if (currentUser.role === "admin") {
-      if (targetRole !== "safety_officer") {
-        return NextResponse.json(
-          { berhasil: false, pesan: "Admin BUFN hanya dapat mengelola akun Safety Officer." },
-          { status: 403 }
-        );
-      }
-      if (currentTargetBufn !== currentUser.bufn) {
+      if (targetRole !== "safety_officer" || targetBufn !== currentUser.bufn) {
         return NextResponse.json(
           {
             berhasil: false,
-            pesan: `Anda hanya memiliki wewenang untuk anggota di ${currentUser.bufn}.`,
+            pesan: `Anda hanya dapat mengelola anggota di wilayah ${currentUser.bufn}.`,
           },
           { status: 403 }
         );
@@ -65,103 +57,108 @@ export async function PATCH(
     }
 
     const body = await request.json();
-    const firestoreUpdates: Record<string, FirestoreValue> = {};
-    const authUpdates: {
-      password?: string;
-      disabled?: boolean;
-      displayName?: string;
-    } = {};
+    const updates: Record<string, FirestoreValue> = {};
 
     if (typeof body.name === "string" && body.name.trim()) {
-      firestoreUpdates.name = { stringValue: body.name.trim() };
-      authUpdates.displayName = body.name.trim();
+      updates.name = { stringValue: body.name.trim() };
     }
-
-    const nextRole: UserRole =
-      currentUser.role === "super_admin" &&
-      (body.role === "admin" || body.role === "safety_officer")
-        ? body.role
-        : targetRole;
-
-    if (currentUser.role === "super_admin" && body.role) {
-      firestoreUpdates.role = { stringValue: nextRole };
-    }
-
-    // Pembaruan lokasi BUFN & Smelter
-    const requestedBufn =
-      typeof body.bufn === "string" && body.bufn.trim()
-        ? body.bufn.trim()
-        : currentTargetBufn;
-    const requestedSmelter =
-      typeof body.smelter === "string" && body.smelter.trim()
-        ? body.smelter.trim()
-        : currentTargetSmelter;
-
-    if (body.bufn !== undefined || body.smelter !== undefined) {
-      // Admin BUFN tidak boleh memindahkan anggota ke luar BUFN-nya
-      const effectiveBufn =
-        currentUser.role === "admin" ? currentUser.bufn : requestedBufn;
-
-      const areas = await getWorkAreas();
-      const bufnObj = areas.find((a) => a.name === effectiveBufn);
-      if (!bufnObj) {
-        return NextResponse.json(
-          { berhasil: false, pesan: "Wilayah BUFN tidak valid." },
-          { status: 400 }
-        );
-      }
-
-      if (
-        nextRole === "safety_officer" &&
-        !isValidSmelterInBufn(areas, effectiveBufn, requestedSmelter)
-      ) {
-        return NextResponse.json(
-          {
-            berhasil: false,
-            pesan: `Smelter "${requestedSmelter}" tidak berada di dalam ${effectiveBufn}.`,
-          },
-          { status: 400 }
-        );
-      }
-
-      const finalSmelter =
-        nextRole === "admin" && !requestedSmelter
-          ? "Semua Smelter BUFN"
-          : requestedSmelter;
-
-      firestoreUpdates.bufn = { stringValue: effectiveBufn };
-      firestoreUpdates.smelter = { stringValue: finalSmelter };
-      firestoreUpdates.unit = {
-        stringValue: `${effectiveBufn} - ${finalSmelter}`,
+    if (typeof body.employeeId === "string" && body.employeeId.trim()) {
+      updates.employeeId = {
+        stringValue: body.employeeId.trim().toUpperCase(),
       };
     }
 
-    if (typeof body.isActive === "boolean") {
-      firestoreUpdates.isActive = { booleanValue: body.isActive };
-      authUpdates.disabled = !body.isActive;
+    let nextRole = targetRole;
+    if (
+      currentUser.role === "super_admin" &&
+      (body.role === "safety_officer" ||
+        body.role === "admin" ||
+        body.role === "super_admin")
+    ) {
+      nextRole = body.role;
+      updates.role = { stringValue: nextRole };
     }
 
-    if (typeof body.newPassword === "string" && body.newPassword.length > 0) {
-      if (body.newPassword.length < 6) {
+    const currentJob = (existingFields.jobTitle?.stringValue ||
+      "Safety Officer") as JobTitle;
+    const nextJob: JobTitle =
+      typeof body.jobTitle === "string" &&
+      JOB_TITLES.includes(body.jobTitle as JobTitle)
+        ? (body.jobTitle as JobTitle)
+        : currentJob;
+    updates.jobTitle = { stringValue: nextJob };
+
+    const currentCat = (existingFields.kpiCategory?.stringValue ||
+      "shift_3g2s") as KpiCategory;
+    let nextCat: KpiCategory =
+      typeof body.kpiCategory === "string" &&
+      KPI_CATEGORIES.includes(body.kpiCategory as KpiCategory)
+        ? (body.kpiCategory as KpiCategory)
+        : currentCat;
+
+    if (nextJob === "Wakil Supervisor") {
+      nextCat = "wakil_spv";
+    } else if (nextCat === "wakil_spv") {
+      nextCat = "shift_3g2s";
+    }
+    updates.kpiCategory = { stringValue: nextCat };
+
+    let nextBufn = targetBufn;
+    if (
+      currentUser.role === "super_admin" &&
+      typeof body.bufn === "string" &&
+      body.bufn.trim()
+    ) {
+      nextBufn = body.bufn.trim();
+    } else if (currentUser.role === "admin") {
+      nextBufn = currentUser.bufn;
+    }
+
+    let nextSmelter = existingFields.smelter?.stringValue || "-";
+    if (typeof body.smelter === "string" && body.smelter.trim()) {
+      nextSmelter = body.smelter.trim();
+    }
+
+    if (nextRole === "super_admin") {
+      nextBufn = "ALL";
+      nextSmelter = "ALL";
+    } else if (nextRole === "admin") {
+      nextSmelter = "ALL";
+    }
+
+    updates.bufn = { stringValue: nextBufn };
+    updates.smelter = { stringValue: nextSmelter };
+    updates.unit = {
+      stringValue:
+        nextRole === "super_admin"
+          ? "Comprehensive HSE"
+          : nextRole === "admin"
+            ? `Admin ${nextBufn}`
+            : `${nextBufn} - ${nextSmelter}`,
+    };
+
+    if (typeof body.isActive === "boolean") {
+      updates.isActive = { booleanValue: body.isActive };
+    }
+    if (typeof body.newPassword === "string" && body.newPassword.trim()) {
+      if (body.newPassword.trim().length < 4) {
         return NextResponse.json(
-          { berhasil: false, pesan: "Password baru minimal 6 karakter." },
+          { berhasil: false, pesan: "Password baru minimal 4 karakter." },
           { status: 400 }
         );
       }
-      authUpdates.password = body.newPassword;
+      updates.passwordHash = {
+        stringValue: hashPassword(body.newPassword.trim()),
+      };
     }
 
-    if (Object.keys(authUpdates).length > 0) {
-      await updateFirebaseAuthAccount(uid, authUpdates);
-    }
-
-    if (Object.keys(firestoreUpdates).length > 0) {
-      await firestoreSetDoc("users", uid, firestoreUpdates);
+    if (Object.keys(updates).length > 0) {
+      await firestoreSetDoc("users", uid, updates);
     }
 
     return NextResponse.json({
       berhasil: true,
-      pesan: "Data pengguna berhasil diperbarui.",
+      pesan: "Data personel berhasil diperbarui.",
     });
   } catch (error) {
     return NextResponse.json(
@@ -170,7 +167,75 @@ export async function PATCH(
         pesan:
           error instanceof Error
             ? error.message
-            : "Gagal memperbarui pengguna.",
+            : "Gagal memperbarui data pengguna.",
+      },
+      { status: 500 }
+    );
+  }
+}
+
+export async function DELETE(
+  _request: Request,
+  context: { params: Promise<{ uid: string }> }
+) {
+  const currentUser = await getCurrentUser();
+  if (
+    !currentUser ||
+    (currentUser.role !== "admin" && currentUser.role !== "super_admin")
+  ) {
+    return NextResponse.json(
+      { berhasil: false, pesan: "Akses ditolak." },
+      { status: 403 }
+    );
+  }
+
+  try {
+    const { uid } = await context.params;
+    if (uid === currentUser.uid) {
+      return NextResponse.json(
+        {
+          berhasil: false,
+          pesan: "Anda tidak dapat menghapus akun Anda sendiri.",
+        },
+        { status: 400 }
+      );
+    }
+
+    const existingDoc = await firestoreGetDoc("users", uid);
+    if (!existingDoc?.fields) {
+      return NextResponse.json(
+        { berhasil: false, pesan: "Pengguna tidak ditemukan." },
+        { status: 404 }
+      );
+    }
+
+    if (currentUser.role === "admin") {
+      const targetRole = existingDoc.fields.role?.stringValue || "";
+      const targetBufn = existingDoc.fields.bufn?.stringValue || "";
+      if (targetRole !== "safety_officer" || targetBufn !== currentUser.bufn) {
+        return NextResponse.json(
+          {
+            berhasil: false,
+            pesan: `Anda hanya dapat menghapus anggota di wilayah ${currentUser.bufn}.`,
+          },
+          { status: 403 }
+        );
+      }
+    }
+
+    await firestoreDeleteDoc("users", uid);
+    return NextResponse.json({
+      berhasil: true,
+      pesan: "Akun pengguna berhasil dihapus.",
+    });
+  } catch (error) {
+    return NextResponse.json(
+      {
+        berhasil: false,
+        pesan:
+          error instanceof Error
+            ? error.message
+            : "Gagal menghapus pengguna.",
       },
       { status: 500 }
     );

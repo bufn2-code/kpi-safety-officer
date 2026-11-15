@@ -8,7 +8,12 @@ import {
 } from "@/lib/firebase-admin";
 import { getCurrentUser } from "@/lib/session";
 import type { FormulaType } from "@/lib/kpi-engine";
-import { parseKpiParameterDoc, type KpiParameter } from "../route";
+import { KPI_CATEGORIES, type KpiCategory } from "@/lib/work-areas";
+import {
+  getParamWeightForCategory,
+  parseKpiParameterDoc,
+  type KpiParameter,
+} from "../route";
 
 const VALID_FORMULAS = new Set<FormulaType>([
   "higher_better",
@@ -52,35 +57,87 @@ export async function PATCH(
       body.weight !== undefined && !Number.isNaN(Number(body.weight))
         ? Number(body.weight)
         : currentParam.weight;
+    const nextTarget =
+      body.target !== undefined && !Number.isNaN(Number(body.target))
+        ? Number(body.target)
+        : currentParam.target;
     const nextFormula: FormulaType =
       typeof body.formulaType === "string" &&
       VALID_FORMULAS.has(body.formulaType as FormulaType)
         ? (body.formulaType as FormulaType)
         : currentParam.formulaType;
 
-    // Validasi total bobot 100% hanya untuk parameter utama (non-bonus)
-    if (nextActive && nextFormula !== "bonus_point") {
-      const docs = await firestoreListCollection("kpi_parameters");
-      const allParams = docs.map(parseKpiParameterDoc);
-      const otherCoreWeight = allParams
-        .filter(
-          (p: KpiParameter) =>
-            p.id !== id && p.isActive && p.formulaType !== "bonus_point"
+    const nextCats: KpiCategory[] = Array.isArray(body.applicableCategories)
+      ? (body.applicableCategories as KpiCategory[]).filter((c) =>
+          KPI_CATEGORIES.includes(c)
         )
-        .reduce((acc: number, p: KpiParameter) => acc + p.weight, 0);
+      : currentParam.applicableCategories;
 
-      if (Math.round((otherCoreWeight + nextWeight) * 100) / 100 > 100) {
-        return NextResponse.json(
-          {
-            berhasil: false,
-            pesan: `Total bobot parameter utama akan menjadi ${otherCoreWeight + nextWeight}% (maksimal 100%).`,
-          },
-          { status: 400 }
-        );
+    if (nextCats.length === 0) {
+      return NextResponse.json(
+        { berhasil: false, pesan: "Minimal pilih 1 kategori pola kerja." },
+        { status: 400 }
+      );
+    }
+
+    const nextCatTargets: Partial<Record<KpiCategory, number>> = {
+      ...currentParam.categoryTargets,
+    };
+    const nextCatWeights: Partial<Record<KpiCategory, number>> = {
+      ...currentParam.categoryWeights,
+    };
+
+    for (const cat of nextCats) {
+      if (body.categoryTargets && body.categoryTargets[cat] !== undefined) {
+        nextCatTargets[cat] = Math.max(0, Number(body.categoryTargets[cat]) || 0);
+      } else if (nextCatTargets[cat] === undefined) {
+        nextCatTargets[cat] = nextTarget;
+      }
+
+      if (body.categoryWeights && body.categoryWeights[cat] !== undefined) {
+        nextCatWeights[cat] = Math.max(0.5, Number(body.categoryWeights[cat]) || nextWeight);
+      } else if (nextCatWeights[cat] === undefined) {
+        nextCatWeights[cat] = nextWeight;
       }
     }
 
-    const updates: Record<string, FirestoreValue> = {};
+    if (nextActive && nextFormula !== "bonus_point") {
+      const docs = await firestoreListCollection("kpi_parameters");
+      const allParams = docs.map(parseKpiParameterDoc);
+
+      for (const cat of nextCats) {
+        const otherCatWeight = allParams
+          .filter(
+            (p: KpiParameter) =>
+              p.id !== id &&
+              p.isActive &&
+              p.formulaType !== "bonus_point" &&
+              p.applicableCategories.includes(cat)
+          )
+          .reduce(
+            (acc: number, p: KpiParameter) =>
+              acc + getParamWeightForCategory(p, cat),
+            0
+          );
+
+        const thisW = nextCatWeights[cat] ?? nextWeight;
+        if (Math.round((otherCatWeight + thisW) * 100) / 100 > 100) {
+          return NextResponse.json(
+            {
+              berhasil: false,
+              pesan: `Total bobot kategori "${cat}" akan menjadi ${otherCatWeight + thisW}% (maksimal 100%).`,
+            },
+            { status: 400 }
+          );
+        }
+      }
+    }
+
+    const updates: Record<string, FirestoreValue> = {
+      applicableCategoriesJson: { stringValue: JSON.stringify(nextCats) },
+      categoryTargetsJson: { stringValue: JSON.stringify(nextCatTargets) },
+      categoryWeightsJson: { stringValue: JSON.stringify(nextCatWeights) },
+    };
 
     if (typeof body.code === "string" && body.code.trim()) {
       updates.code = { stringValue: body.code.trim().toUpperCase() };
@@ -113,9 +170,7 @@ export async function PATCH(
       updates.order = { integerValue: String(Math.round(Number(body.order))) };
     }
 
-    if (Object.keys(updates).length > 0) {
-      await firestoreSetDoc("kpi_parameters", id, updates);
-    }
+    await firestoreSetDoc("kpi_parameters", id, updates);
 
     return NextResponse.json({
       berhasil: true,

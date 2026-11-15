@@ -1,29 +1,36 @@
 import { NextResponse } from "next/server";
+import crypto from "node:crypto";
 import {
-  createFirebaseAuthUser,
   firestoreListCollection,
   firestoreSetDoc,
 } from "@/lib/firebase-admin";
+import { hashPassword } from "@/lib/password";
 import { getCurrentUser, type UserRole } from "@/lib/session";
-import { getWorkAreas, isValidSmelterInBufn } from "@/lib/work-areas";
+import {
+  JOB_TITLES,
+  KPI_CATEGORIES,
+  type JobTitle,
+  type KpiCategory,
+} from "@/lib/work-areas";
 
 export interface ManagedUser {
   uid: string;
   employeeId: string;
   name: string;
   role: UserRole;
+  jobTitle: JobTitle;
+  kpiCategory: KpiCategory;
   bufn: string;
   smelter: string;
   unit: string;
   isActive: boolean;
-  createdAt: string;
 }
 
 export async function GET() {
   const currentUser = await getCurrentUser();
   if (
     !currentUser ||
-    (currentUser.role !== "super_admin" && currentUser.role !== "admin")
+    (currentUser.role !== "admin" && currentUser.role !== "super_admin")
   ) {
     return NextResponse.json(
       { berhasil: false, pesan: "Akses ditolak." },
@@ -33,42 +40,61 @@ export async function GET() {
 
   try {
     const docs = await firestoreListCollection("users");
-    let users: ManagedUser[] = docs.map(
+    const allUsers: ManagedUser[] = docs.map(
       (doc: {
+        name?: string;
         fields?: Record<
           string,
           { stringValue?: string; booleanValue?: boolean }
         >;
       }) => {
         const f = doc.fields || {};
+        const fallbackUid = doc.name?.split("/").pop() || "";
         const role = (f.role?.stringValue || "safety_officer") as UserRole;
         const bufn =
           f.bufn?.stringValue || (role === "super_admin" ? "ALL" : "BUFN 1");
         const smelter = f.smelter?.stringValue || "-";
+
+        const rawJob = f.jobTitle?.stringValue as JobTitle;
+        const jobTitle: JobTitle = JOB_TITLES.includes(rawJob)
+          ? rawJob
+          : "Safety Officer";
+
+        const rawCat = f.kpiCategory?.stringValue as KpiCategory;
+        const kpiCategory: KpiCategory =
+          jobTitle === "Wakil Supervisor"
+            ? "wakil_spv"
+            : KPI_CATEGORIES.includes(rawCat)
+              ? rawCat
+              : "shift_3g2s";
+
         return {
-          uid: f.uid?.stringValue || "",
+          uid: f.uid?.stringValue || fallbackUid,
           employeeId: f.employeeId?.stringValue || "",
           name: f.name?.stringValue || "",
           role,
+          jobTitle,
+          kpiCategory,
           bufn,
           smelter,
           unit:
             f.unit?.stringValue ||
             (bufn === "ALL" ? "Comprehensive HSE" : `${bufn} - ${smelter}`),
           isActive: f.isActive?.booleanValue ?? true,
-          createdAt: f.createdAt?.stringValue || "",
         };
       }
     );
 
-    // Isolasi data: Admin BUFN hanya melihat anggota di BUFN-nya sendiri
-    if (currentUser.role === "admin") {
-      users = users.filter((u) => u.bufn === currentUser.bufn);
-    }
+    const visibleUsers =
+      currentUser.role === "super_admin"
+        ? allUsers
+        : allUsers.filter(
+            (u) => u.role === "safety_officer" && u.bufn === currentUser.bufn
+          );
 
-    users.sort((a, b) => a.name.localeCompare(b.name));
+    visibleUsers.sort((a, b) => a.name.localeCompare(b.name));
 
-    return NextResponse.json({ berhasil: true, users });
+    return NextResponse.json({ berhasil: true, users: visibleUsers });
   } catch (error) {
     return NextResponse.json(
       {
@@ -87,10 +113,10 @@ export async function POST(request: Request) {
   const currentUser = await getCurrentUser();
   if (
     !currentUser ||
-    (currentUser.role !== "super_admin" && currentUser.role !== "admin")
+    (currentUser.role !== "admin" && currentUser.role !== "super_admin")
   ) {
     return NextResponse.json(
-      { berhasil: false, pesan: "Anda tidak memiliki izin menambah pengguna." },
+      { berhasil: false, pesan: "Akses ditolak." },
       { status: 403 }
     );
   }
@@ -99,100 +125,112 @@ export async function POST(request: Request) {
     const body = await request.json();
     const employeeId = String(body.employeeId || "").trim().toUpperCase();
     const name = String(body.name || "").trim();
-    const password = String(body.password || "");
-    const requestedRole = String(
-      body.role || "safety_officer"
-    ) as UserRole;
+    const password = String(body.password || "").trim();
 
-    if (!employeeId || !name || password.length < 6) {
+    const requestedRole = String(body.role || "safety_officer") as UserRole;
+    const role: UserRole =
+      currentUser.role === "super_admin" &&
+      (requestedRole === "admin" ||
+        requestedRole === "super_admin" ||
+        requestedRole === "safety_officer")
+        ? requestedRole
+        : "safety_officer";
+
+    const rawJob = String(body.jobTitle || "Safety Officer") as JobTitle;
+    const jobTitle: JobTitle = JOB_TITLES.includes(rawJob)
+      ? rawJob
+      : "Safety Officer";
+
+    const rawCat = String(body.kpiCategory || "shift_3g2s") as KpiCategory;
+    const kpiCategory: KpiCategory =
+      jobTitle === "Wakil Supervisor"
+        ? "wakil_spv"
+        : KPI_CATEGORIES.includes(rawCat) && rawCat !== "wakil_spv"
+          ? rawCat
+          : "shift_3g2s";
+
+    let bufn = String(body.bufn || "BUFN 1").trim();
+    let smelter = String(body.smelter || "").trim();
+
+    if (currentUser.role === "admin") {
+      bufn = currentUser.bufn;
+    }
+
+    if (role === "super_admin") {
+      bufn = "ALL";
+      smelter = "ALL";
+    } else if (role === "admin") {
+      smelter = "ALL";
+    }
+
+    if (!employeeId || !name || password.length < 4) {
       return NextResponse.json(
         {
           berhasil: false,
           pesan:
-            "ID Karyawan, Nama Lengkap wajib diisi, dan Password minimal 6 karakter.",
+            "ID Karyawan, Nama Lengkap, dan Password (minimal 4 karakter) wajib diisi.",
         },
         { status: 400 }
       );
     }
 
-    // Tentukan peran & BUFN sesuai hak akses pembuat akun
-    let finalRole: UserRole = "safety_officer";
-    let targetBufn = String(body.bufn || "").trim();
-    const targetSmelter = String(body.smelter || "").trim();
-
-    if (currentUser.role === "admin") {
-      // Admin BUFN hanya boleh menambah Safety Officer di BUFN-nya sendiri
-      if (requestedRole !== "safety_officer") {
-        return NextResponse.json(
-          {
-            berhasil: false,
-            pesan: "Admin BUFN hanya dapat menambahkan akun Safety Officer.",
-          },
-          { status: 403 }
-        );
-      }
-      finalRole = "safety_officer";
-      targetBufn = currentUser.bufn;
-    } else {
-      // Super Admin dapat membuat Admin BUFN atau Safety Officer
-      finalRole =
-        requestedRole === "admin" ? "admin" : "safety_officer";
-    }
-
-    const areas = await getWorkAreas();
-    const bufnObj = areas.find((a) => a.name === targetBufn);
-    if (!bufnObj) {
-      return NextResponse.json(
-        { berhasil: false, pesan: "Wilayah BUFN wajib dipilih." },
-        { status: 400 }
-      );
-    }
-
-    // Untuk Admin BUFN, smelter boleh dipilih spesifik atau "Semua Smelter BUFN"
-    let finalSmelter = targetSmelter;
-    if (finalRole === "admin" && !finalSmelter) {
-      finalSmelter = "Semua Smelter BUFN";
-    } else if (
-      finalRole === "safety_officer" &&
-      !isValidSmelterInBufn(areas, targetBufn, finalSmelter)
-    ) {
+    if (role === "safety_officer" && (!bufn || !smelter)) {
       return NextResponse.json(
         {
           berhasil: false,
-          pesan: `Smelter "${finalSmelter}" tidak terdaftar di ${targetBufn}.`,
+          pesan: "BUFN dan Lokasi Smelter wajib dipilih.",
         },
         { status: 400 }
       );
     }
 
-    const unitLabel = `${targetBufn} - ${finalSmelter}`;
-    const authUser = await createFirebaseAuthUser(employeeId, password, name);
-    const now = new Date().toISOString();
+    const docs = await firestoreListCollection("users");
+    const duplicate = docs.some(
+      (d: { fields?: Record<string, { stringValue?: string }> }) =>
+        (d.fields?.employeeId?.stringValue || "").toUpperCase() === employeeId
+    );
+    if (duplicate) {
+      return NextResponse.json(
+        {
+          berhasil: false,
+          pesan: `ID Karyawan "${employeeId}" sudah terdaftar.`,
+        },
+        { status: 409 }
+      );
+    }
 
-    await firestoreSetDoc("users", authUser.localId, {
-      uid: { stringValue: authUser.localId },
+    const uid = `usr_${crypto.randomUUID().slice(0, 8)}`;
+    const unitLabel =
+      role === "super_admin"
+        ? "Comprehensive HSE"
+        : role === "admin"
+          ? `Admin ${bufn}`
+          : `${bufn} - ${smelter}`;
+
+    await firestoreSetDoc("users", uid, {
+      uid: { stringValue: uid },
       employeeId: { stringValue: employeeId },
       name: { stringValue: name },
-      role: { stringValue: finalRole },
-      bufn: { stringValue: targetBufn },
-      smelter: { stringValue: finalSmelter },
+      role: { stringValue: role },
+      jobTitle: { stringValue: jobTitle },
+      kpiCategory: { stringValue: kpiCategory },
+      bufn: { stringValue: bufn },
+      smelter: { stringValue: smelter },
       unit: { stringValue: unitLabel },
+      passwordHash: { stringValue: hashPassword(password) },
       isActive: { booleanValue: true },
-      createdAt: { stringValue: now },
     });
 
     return NextResponse.json({
       berhasil: true,
-      pesan: `Akun ${name} (${employeeId}) berhasil ditambahkan ke ${unitLabel}.`,
+      pesan: `Akun ${name} (${jobTitle} • ${bufn}${smelter !== "ALL" ? ` - ${smelter}` : ""}) berhasil ditambahkan.`,
     });
   } catch (error) {
     return NextResponse.json(
       {
         berhasil: false,
         pesan:
-          error instanceof Error
-            ? error.message
-            : "Gagal menambahkan pengguna.",
+          error instanceof Error ? error.message : "Gagal menambah pengguna.",
       },
       { status: 500 }
     );

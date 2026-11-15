@@ -31,7 +31,8 @@ export async function POST(request: Request) {
     return NextResponse.json(
       {
         berhasil: false,
-        pesan: "Hanya Super Admin yang dapat mengubah Kategori Nilai & Kebijakan Kelulusan.",
+        pesan:
+          "Hanya Super Admin yang dapat mengubah Kategori Nilai & Kebijakan Kelulusan.",
       },
       { status: 403 }
     );
@@ -87,6 +88,30 @@ export async function POST(request: Request) {
           .trim()
           .toUpperCase(),
         capTotalScoreAt100: Boolean(p.capTotalScoreAt100),
+
+        periodStartDay: Math.max(
+          1,
+          Math.min(31, Math.round(Number(p.periodStartDay) || 20))
+        ),
+        periodEndDay: Math.max(
+          1,
+          Math.min(31, Math.round(Number(p.periodEndDay) || 20))
+        ),
+        periodSpansNextMonth:
+          p.periodSpansNextMonth !== undefined
+            ? Boolean(p.periodSpansNextMonth)
+            : true,
+
+        spvTeamWeightPct: Math.max(
+          0,
+          Math.min(100, Number(p.spvTeamWeightPct) ?? 30)
+        ),
+        spvTeamCalcMode:
+          p.spvTeamCalcMode === "option_b" ? "option_b" : "option_a",
+        spvPenaltyPerFailedMember: Math.max(
+          0,
+          Number(p.spvPenaltyPerFailedMember) || 0
+        ),
       };
       await saveScoringPolicy(cleanPolicy);
     }
@@ -98,7 +123,7 @@ export async function POST(request: Request) {
 
     return NextResponse.json({
       berhasil: true,
-      pesan: "Kategori Nilai & Kebijakan Kelulusan KPI berhasil diperbarui.",
+      pesan: "Kebijakan Periode, Wakil SPV & Kategori Nilai berhasil diperbarui.",
       grades: updatedGrades,
       policy: updatedPolicy,
     });

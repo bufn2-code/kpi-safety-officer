@@ -23,11 +23,24 @@ export interface GradeThreshold {
   color: "emerald" | "blue" | "amber" | "red";
 }
 
+export type SpvTeamCalcMode = "option_a" | "option_b";
+
 export interface ScoringPolicy {
-  requireAllCoreAchieved: boolean; // Saklar: apakah semua indikator utama wajib mencapai batas minimal?
-  minCoreAchievementPct: number; // Batas minimal pencapaian tiap indikator utama (misal 100 = 100% target, 80 = 80% target)
-  fallbackGradeIfFailed: string; // Predikat maksimal jika ada indikator utama gagal (misal "D")
-  capTotalScoreAt100: boolean; // Apakah total skor akhir (utama + bonus) dibatasi maksimal 100%?
+  // 1. Aturan Kelulusan Indikator Wajib
+  requireAllCoreAchieved: boolean;
+  minCoreAchievementPct: number;
+  fallbackGradeIfFailed: string;
+  capTotalScoreAt100: boolean;
+
+  // 2. Aturan Periode Cut-Off KPI (Default: Tanggal 20 s/d Tanggal 20 bulan berikutnya)
+  periodStartDay: number;
+  periodEndDay: number;
+  periodSpansNextMonth: boolean;
+
+  // 3. Aturan Khusus Wakil Supervisor
+  spvTeamWeightPct: number; // Fleksibel (default 30%, sehingga porsi pribadi = 100 - 30 = 70%)
+  spvTeamCalcMode: SpvTeamCalcMode; // "option_a" = mulai penuh lalu dipotong penalti; "option_b" = rata-rata tim * porsi% lalu dipotong penalti
+  spvPenaltyPerFailedMember: number; // Pengurangan poin per anggota yang indikator wajibnya tidak tercapai
 }
 
 export const DEFAULT_SCORING_POLICY: ScoringPolicy = {
@@ -35,6 +48,14 @@ export const DEFAULT_SCORING_POLICY: ScoringPolicy = {
   minCoreAchievementPct: 100,
   fallbackGradeIfFailed: "D",
   capTotalScoreAt100: true,
+
+  periodStartDay: 20,
+  periodEndDay: 20,
+  periodSpansNextMonth: true,
+
+  spvTeamWeightPct: 30,
+  spvTeamCalcMode: "option_a",
+  spvPenaltyPerFailedMember: 5,
 };
 
 export const DEFAULT_GRADES: GradeThreshold[] = [
@@ -43,6 +64,48 @@ export const DEFAULT_GRADES: GradeThreshold[] = [
   { id: "g_c", grade: "C", label: "Cukup", minScore: 70, color: "amber" },
   { id: "g_d", grade: "D", label: "Kurang", minScore: 0, color: "red" },
 ];
+
+const BULAN_ID = [
+  "Jan",
+  "Feb",
+  "Mar",
+  "Apr",
+  "Mei",
+  "Jun",
+  "Jul",
+  "Agu",
+  "Sep",
+  "Okt",
+  "Nov",
+  "Des",
+];
+
+export function formatPeriodDateRange(
+  periodYm: string,
+  policy: Pick<
+    ScoringPolicy,
+    "periodStartDay" | "periodEndDay" | "periodSpansNextMonth"
+  >
+): string {
+  const match = /^(\d{4})-(\d{2})$/.exec(periodYm);
+  if (!match) return periodYm;
+  const year = Number(match[1]);
+  const monthIdx = Number(match[2]) - 1; // 0-based
+
+  const startDay = Math.max(1, Math.min(31, Number(policy.periodStartDay) || 20));
+  const endDay = Math.max(1, Math.min(31, Number(policy.periodEndDay) || 20));
+
+  if (!policy.periodSpansNextMonth) {
+    const mName = BULAN_ID[monthIdx] || "";
+    return `${startDay} ${mName} ${year} – ${endDay} ${mName} ${year}`;
+  }
+
+  // Periode berjalan dari tanggal X bulan ini ke tanggal Y bulan berikutnya
+  const nextMonthIdx = (monthIdx + 1) % 12;
+  const nextYear = monthIdx === 11 ? year + 1 : year;
+
+  return `${startDay} ${BULAN_ID[monthIdx]} ${year} – ${endDay} ${BULAN_ID[nextMonthIdx]} ${nextYear}`;
+}
 
 export function calculateDynamicScore(
   formulaType: FormulaType,
@@ -54,9 +117,6 @@ export function calculateDynamicScore(
   const cleanActual = Math.max(0, Number(actual) || 0);
   const cleanTarget = Math.max(0, Number(target) || 0);
 
-  // Untuk Poin Bonus:
-  // target = Poin per 1 kegiatan (misal: 2 poin per kegiatan)
-  // weight = Batas maksimal poin bonus yang bisa didapat (misal: 10 poin)
   if (formulaType === "bonus_point") {
     const pointPerUnit = cleanTarget > 0 ? cleanTarget : 1;
     const rawBonus = cleanActual * pointPerUnit;
@@ -109,6 +169,27 @@ export interface EvaluableEntry {
   score: number;
 }
 
+export function resolveGradeByScore(
+  score: number,
+  grades: GradeThreshold[]
+): GradeThreshold {
+  const sortedGrades = [...grades].sort((a, b) => b.minScore - a.minScore);
+  for (const g of sortedGrades) {
+    if (score >= g.minScore) {
+      return g;
+    }
+  }
+  return (
+    sortedGrades[sortedGrades.length - 1] || {
+      id: "g_d",
+      grade: "D",
+      label: "Kurang",
+      minScore: 0,
+      color: "red",
+    }
+  );
+}
+
 export function evaluateKpiResult(
   entries: EvaluableEntry[],
   grades: GradeThreshold[],
@@ -124,15 +205,19 @@ export function evaluateKpiResult(
   let coreRaw = 0;
   let bonusRaw = 0;
   const failedCoreCodes: string[] = [];
+  const minThresholdPct =
+    Number(policy.minCoreAchievementPct) > 0
+      ? Number(policy.minCoreAchievementPct)
+      : 100;
 
   for (const item of entries) {
     if (item.formulaType === "bonus_point") {
       bonusRaw += item.score;
     } else {
       coreRaw += item.score;
-      if (policy.requireAllCoreAchieved && item.weight > 0) {
+      if (item.weight > 0) {
         const achievedPct = (item.score / item.weight) * 100;
-        if (achievedPct + 0.001 < policy.minCoreAchievementPct) {
+        if (achievedPct + 0.001 < minThresholdPct) {
           failedCoreCodes.push(item.code || item.name);
         }
       }
@@ -146,25 +231,11 @@ export function evaluateKpiResult(
     ? Math.min(100, sumScore)
     : sumScore;
 
-  const sortedGrades = [...grades].sort((a, b) => b.minScore - a.minScore);
-  let resolved =
-    sortedGrades[sortedGrades.length - 1] || {
-      id: "g_d",
-      grade: "D",
-      label: "Kurang",
-      minScore: 0,
-      color: "red" as const,
-    };
-
-  for (const g of sortedGrades) {
-    if (totalScore >= g.minScore) {
-      resolved = g;
-      break;
-    }
-  }
+  let resolved = resolveGradeByScore(totalScore, grades);
 
   let gateTriggered = false;
   if (policy.requireAllCoreAchieved && failedCoreCodes.length > 0) {
+    const sortedGrades = [...grades].sort((a, b) => b.minScore - a.minScore);
     const fallbackGradeObj = sortedGrades.find(
       (g) => g.grade.toUpperCase() === policy.fallbackGradeIfFailed.toUpperCase()
     );
@@ -181,6 +252,116 @@ export function evaluateKpiResult(
     grade: resolved,
     gateTriggered,
     failedCoreCodes,
+  };
+}
+
+export interface TeamMemberKpiSummary {
+  uid: string;
+  employeeId: string;
+  name: string;
+  jobTitle: string;
+  kpiCategory: string;
+  totalScore: number;
+  hasFailedCore: boolean;
+  failedCoreCodes: string[];
+  hasCardSaved: boolean;
+}
+
+export function evaluateSupervisorKpiResult(
+  personalEntries: EvaluableEntry[],
+  teamMembers: TeamMemberKpiSummary[],
+  grades: GradeThreshold[],
+  policy: ScoringPolicy
+) {
+  const personalEval = evaluateKpiResult(personalEntries, grades, policy);
+
+  const teamWeightPct = Math.max(
+    0,
+    Math.min(100, Number(policy.spvTeamWeightPct) ?? 30)
+  );
+  const personalWeightPct = Math.round((100 - teamWeightPct) * 100) / 100;
+
+  // Kontribusi Porsi Pribadi (misal 70% dari skor pribadi Wakil SPV)
+  const personalWeightedScore =
+    Math.round(personalEval.totalScore * (personalWeightPct / 100) * 100) / 100;
+
+  // Hitung jumlah anggota di wilayah Smelter-nya yang memiliki indikator wajib tidak tercapai
+  const failedMembers = teamMembers.filter((m) => m.hasFailedCore);
+  const failedMembersCount = failedMembers.length;
+  const penaltyPerMember = Math.max(
+    0,
+    Number(policy.spvPenaltyPerFailedMember) || 0
+  );
+  const totalPenalty =
+    Math.round(failedMembersCount * penaltyPerMember * 100) / 100;
+
+  const teamAverageScore =
+    teamMembers.length > 0
+      ? Math.round(
+          (teamMembers.reduce((sum, m) => sum + m.totalScore, 0) /
+            teamMembers.length) *
+            100
+        ) / 100
+      : 100;
+
+  let baseTeamPoints = teamWeightPct;
+  if (policy.spvTeamCalcMode === "option_b") {
+    // Opsi B: Rata-rata skor anggota * porsi % tim (misal 85% * 30% = 25.5 poin)
+    baseTeamPoints =
+      Math.round(teamAverageScore * (teamWeightPct / 100) * 100) / 100;
+  } else {
+    // Opsi A: Mulai dari penuh porsi % tim (misal 30 poin)
+    baseTeamPoints = teamWeightPct;
+  }
+
+  const teamWeightedScore = Math.max(
+    0,
+    Math.round((baseTeamPoints - totalPenalty) * 100) / 100
+  );
+
+  const rawCombined =
+    Math.round((personalWeightedScore + teamWeightedScore) * 100) / 100;
+  const finalScore = policy.capTotalScoreAt100
+    ? Math.min(100, rawCombined)
+    : rawCombined;
+
+  let resolvedGrade = resolveGradeByScore(finalScore, grades);
+  let gateTriggered = false;
+
+  if (
+    policy.requireAllCoreAchieved &&
+    personalEval.failedCoreCodes.length > 0
+  ) {
+    const sortedGrades = [...grades].sort((a, b) => b.minScore - a.minScore);
+    const fallbackGradeObj = sortedGrades.find(
+      (g) => g.grade.toUpperCase() === policy.fallbackGradeIfFailed.toUpperCase()
+    );
+    if (fallbackGradeObj && resolvedGrade.minScore > fallbackGradeObj.minScore) {
+      resolvedGrade = fallbackGradeObj;
+      gateTriggered = true;
+    }
+  }
+
+  return {
+    personalRawScore: personalEval.totalScore,
+    personalCoreScore: personalEval.coreScore,
+    personalBonusScore: personalEval.bonusScore,
+    personalWeightPct,
+    personalWeightedScore,
+
+    teamWeightPct,
+    teamCalcMode: policy.spvTeamCalcMode,
+    teamAverageScore,
+    baseTeamPoints,
+    failedMembersCount,
+    penaltyPerMember,
+    totalPenalty,
+    teamWeightedScore,
+
+    totalScore: finalScore,
+    grade: resolvedGrade,
+    gateTriggered,
+    failedCoreCodes: personalEval.failedCoreCodes,
   };
 }
 
@@ -225,6 +406,33 @@ export async function getScoringPolicy(): Promise<ScoringPolicy> {
           parsed.capTotalScoreAt100 !== undefined
             ? Boolean(parsed.capTotalScoreAt100)
             : true,
+
+        periodStartDay:
+          Number(parsed.periodStartDay) >= 1 &&
+          Number(parsed.periodStartDay) <= 31
+            ? Number(parsed.periodStartDay)
+            : 20,
+        periodEndDay:
+          Number(parsed.periodEndDay) >= 1 && Number(parsed.periodEndDay) <= 31
+            ? Number(parsed.periodEndDay)
+            : 20,
+        periodSpansNextMonth:
+          parsed.periodSpansNextMonth !== undefined
+            ? Boolean(parsed.periodSpansNextMonth)
+            : true,
+
+        spvTeamWeightPct:
+          parsed.spvTeamWeightPct !== undefined &&
+          !Number.isNaN(Number(parsed.spvTeamWeightPct))
+            ? Math.max(0, Math.min(100, Number(parsed.spvTeamWeightPct)))
+            : 30,
+        spvTeamCalcMode:
+          parsed.spvTeamCalcMode === "option_b" ? "option_b" : "option_a",
+        spvPenaltyPerFailedMember:
+          parsed.spvPenaltyPerFailedMember !== undefined &&
+          !Number.isNaN(Number(parsed.spvPenaltyPerFailedMember))
+            ? Math.max(0, Number(parsed.spvPenaltyPerFailedMember))
+            : 5,
       };
     }
   } catch {

@@ -6,6 +6,7 @@ import {
 } from "@/lib/firebase-admin";
 import { getCurrentUser } from "@/lib/session";
 import type { FormulaType } from "@/lib/kpi-engine";
+import { KPI_CATEGORIES, type KpiCategory } from "@/lib/work-areas";
 
 export interface KpiParameter {
   id: string;
@@ -14,8 +15,11 @@ export interface KpiParameter {
   description: string;
   formulaType: FormulaType;
   unit: string;
-  target: number;
-  weight: number;
+  target: number; // Target default / fallback
+  weight: number; // Bobot default / fallback
+  applicableCategories: KpiCategory[];
+  categoryTargets: Partial<Record<KpiCategory, number>>;
+  categoryWeights: Partial<Record<KpiCategory, number>>;
   isActive: boolean;
   order: number;
 }
@@ -27,6 +31,26 @@ const VALID_FORMULAS = new Set<FormulaType>([
   "direct_percentage",
   "bonus_point",
 ]);
+
+export function getParamTargetForCategory(
+  p: KpiParameter,
+  cat: KpiCategory
+): number {
+  const val = p.categoryTargets?.[cat];
+  return val !== undefined && !Number.isNaN(Number(val))
+    ? Number(val)
+    : p.target;
+}
+
+export function getParamWeightForCategory(
+  p: KpiParameter,
+  cat: KpiCategory
+): number {
+  const val = p.categoryWeights?.[cat];
+  return val !== undefined && !Number.isNaN(Number(val))
+    ? Number(val)
+    : p.weight;
+}
 
 export function parseKpiParameterDoc(doc: {
   name?: string;
@@ -56,6 +80,38 @@ export function parseKpiParameterDoc(doc: {
   const rawFormula = (f.formulaType?.stringValue ||
     "higher_better") as FormulaType;
 
+  let applicableCategories: KpiCategory[] = [...KPI_CATEGORIES];
+  if (f.applicableCategoriesJson?.stringValue) {
+    try {
+      const parsed = JSON.parse(
+        f.applicableCategoriesJson.stringValue
+      ) as KpiCategory[];
+      if (Array.isArray(parsed) && parsed.length > 0) {
+        applicableCategories = parsed.filter((c) => KPI_CATEGORIES.includes(c));
+      }
+    } catch {
+      // fallback semua kategori
+    }
+  }
+
+  let categoryTargets: Partial<Record<KpiCategory, number>> = {};
+  if (f.categoryTargetsJson?.stringValue) {
+    try {
+      categoryTargets = JSON.parse(f.categoryTargetsJson.stringValue);
+    } catch {
+      categoryTargets = {};
+    }
+  }
+
+  let categoryWeights: Partial<Record<KpiCategory, number>> = {};
+  if (f.categoryWeightsJson?.stringValue) {
+    try {
+      categoryWeights = JSON.parse(f.categoryWeightsJson.stringValue);
+    } catch {
+      categoryWeights = {};
+    }
+  }
+
   return {
     id: f.id?.stringValue || fallbackId,
     code: f.code?.stringValue || "",
@@ -65,6 +121,9 @@ export function parseKpiParameterDoc(doc: {
     unit: f.unit?.stringValue || "Kegiatan",
     target: Number(rawTarget) || 0,
     weight: Number(rawWeight) || 0,
+    applicableCategories,
+    categoryTargets,
+    categoryWeights,
     isActive: f.isActive?.booleanValue ?? true,
     order: Number(rawOrder) || 0,
   };
@@ -131,6 +190,32 @@ export async function POST(request: Request) {
     const weight = Number(body.weight);
     const order = Number(body.order) || 1;
 
+    const rawCats = Array.isArray(body.applicableCategories)
+      ? (body.applicableCategories as KpiCategory[]).filter((c) =>
+          KPI_CATEGORIES.includes(c)
+        )
+      : [...KPI_CATEGORIES];
+
+    if (rawCats.length === 0) {
+      return NextResponse.json(
+        {
+          berhasil: false,
+          pesan: "Pilih minimal 1 Kategori Pola Kerja KPI.",
+        },
+        { status: 400 }
+      );
+    }
+
+    const categoryTargets: Partial<Record<KpiCategory, number>> = {};
+    const categoryWeights: Partial<Record<KpiCategory, number>> = {};
+
+    for (const cat of rawCats) {
+      const ct = Number(body.categoryTargets?.[cat]);
+      const cw = Number(body.categoryWeights?.[cat]);
+      categoryTargets[cat] = !Number.isNaN(ct) && ct >= 0 ? ct : target;
+      categoryWeights[cat] = !Number.isNaN(cw) && cw > 0 ? cw : weight;
+    }
+
     if (
       !code ||
       !name ||
@@ -149,22 +234,35 @@ export async function POST(request: Request) {
       );
     }
 
-    // Batas 100% hanya berlaku untuk parameter utama (bukan bonus_point)
+    // Validasi batas 100% per kategori untuk parameter utama (non-bonus)
     if (formulaType !== "bonus_point") {
       const docs = await firestoreListCollection("kpi_parameters");
       const existing = docs.map(parseKpiParameterDoc);
-      const activeCoreWeight = existing
-        .filter((p: KpiParameter) => p.isActive && p.formulaType !== "bonus_point")
-        .reduce((acc: number, p: KpiParameter) => acc + p.weight, 0);
 
-      if (Math.round((activeCoreWeight + weight) * 100) / 100 > 100) {
-        return NextResponse.json(
-          {
-            berhasil: false,
-            pesan: `Total bobot parameter utama saat ini ${activeCoreWeight}%. Penambahan ${weight}% akan melebihi batas 100%. (Gunakan tipe "Poin Bonus" jika ingin menambah nilai ekstra di luar 100%).`,
-          },
-          { status: 400 }
-        );
+      for (const cat of rawCats) {
+        const currentCatWeight = existing
+          .filter(
+            (p: KpiParameter) =>
+              p.isActive &&
+              p.formulaType !== "bonus_point" &&
+              p.applicableCategories.includes(cat)
+          )
+          .reduce(
+            (acc: number, p: KpiParameter) =>
+              acc + getParamWeightForCategory(p, cat),
+            0
+          );
+
+        const addW = categoryWeights[cat] ?? weight;
+        if (Math.round((currentCatWeight + addW) * 100) / 100 > 100) {
+          return NextResponse.json(
+            {
+              berhasil: false,
+              pesan: `Total bobot kategori "${cat}" saat ini ${currentCatWeight}%. Penambahan ${addW}% akan melebihi batas 100%.`,
+            },
+            { status: 400 }
+          );
+        }
       }
     }
 
@@ -178,6 +276,9 @@ export async function POST(request: Request) {
       unit: { stringValue: unit },
       target: { doubleValue: target },
       weight: { doubleValue: weight },
+      applicableCategoriesJson: { stringValue: JSON.stringify(rawCats) },
+      categoryTargetsJson: { stringValue: JSON.stringify(categoryTargets) },
+      categoryWeightsJson: { stringValue: JSON.stringify(categoryWeights) },
       isActive: { booleanValue: true },
       order: { integerValue: String(Math.round(order)) },
     });

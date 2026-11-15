@@ -1,42 +1,84 @@
 import { firestoreGetDoc, firestoreSetDoc } from "./firebase-admin";
 
 export interface BufnArea {
-  id: string;
   name: string;
   smelters: string[];
 }
 
+export type JobTitle =
+  | "Junior Safety"
+  | "Safety Officer"
+  | "Senior Safety Officer"
+  | "Wakil Supervisor";
+
+export type KpiCategory = "shift_3g2s" | "non_shift" | "wakil_spv";
+
+export const JOB_TITLES: JobTitle[] = [
+  "Junior Safety",
+  "Safety Officer",
+  "Senior Safety Officer",
+  "Wakil Supervisor",
+];
+
+export const KPI_CATEGORY_LABELS: Record<KpiCategory, string> = {
+  shift_3g2s: "3 Grup 2 Shift",
+  non_shift: "Non Shift",
+  wakil_spv: "Wakil Supervisor",
+};
+
+export const KPI_CATEGORIES: KpiCategory[] = [
+  "shift_3g2s",
+  "non_shift",
+  "wakil_spv",
+];
+
+export interface ParameterCategoryConfig {
+  target: number;
+  weight: number;
+  categoryTargets?: Partial<Record<KpiCategory, number>>;
+  categoryWeights?: Partial<Record<KpiCategory, number>>;
+}
+
+export function getParamTargetForCategory(
+  p: ParameterCategoryConfig,
+  cat: KpiCategory
+): number {
+  const val = p.categoryTargets?.[cat];
+  return val !== undefined && !Number.isNaN(Number(val))
+    ? Number(val)
+    : p.target;
+}
+
+export function getParamWeightForCategory(
+  p: ParameterCategoryConfig,
+  cat: KpiCategory
+): number {
+  const val = p.categoryWeights?.[cat];
+  return val !== undefined && !Number.isNaN(Number(val))
+    ? Number(val)
+    : p.weight;
+}
+
 export const DEFAULT_WORK_AREAS: BufnArea[] = [
   {
-    id: "BUFN 1",
     name: "BUFN 1",
-    smelters: ["Smelter A", "Smelter B", "Smelter G"],
+    smelters: ["Smelter A", "Smelter B", "Smelter C", "Smelter D"],
   },
   {
-    id: "BUFN 2",
     name: "BUFN 2",
-    smelters: ["Smelter C", "Smelter E", "Smelter F"],
+    smelters: ["Smelter E", "Smelter F", "Smelter G", "Smelter H"],
   },
   {
-    id: "BUFN 3",
     name: "BUFN 3",
-    smelters: ["Smelter K", "Smelter L", "Smelter RS", "Nikelmatte S"],
+    smelters: ["Smelter I", "Smelter J", "Smelter K", "Smelter L"],
   },
   {
-    id: "BUFN 4",
     name: "BUFN 4",
-    smelters: [
-      "Smelter M",
-      "Smelter O",
-      "Smelter Q",
-      "Nikelmatte M",
-      "Nikelmatte Q",
-    ],
+    smelters: ["Smelter M", "Smelter N", "Smelter O", "Smelter P"],
   },
   {
-    id: "BUFN 5",
     name: "BUFN 5",
-    smelters: ["Smelter U", "Smelter W", "Smelter X"],
+    smelters: ["Smelter Q", "Smelter R", "Smelter S", "Smelter T"],
   },
 ];
 
@@ -51,7 +93,7 @@ export async function getWorkAreas(): Promise<BufnArea[]> {
       }
     }
   } catch {
-    // Gunakan default jika belum tersimpan di Firestore
+    // Fallback ke default jika belum ada di Firestore
   }
   return DEFAULT_WORK_AREAS;
 }
@@ -61,14 +103,4 @@ export async function saveWorkAreas(areas: BufnArea[]): Promise<void> {
     areasJson: { stringValue: JSON.stringify(areas) },
     updatedAt: { stringValue: new Date().toISOString() },
   });
-}
-
-export function isValidSmelterInBufn(
-  areas: BufnArea[],
-  bufn: string,
-  smelter: string
-): boolean {
-  const found = areas.find((a) => a.name === bufn || a.id === bufn);
-  if (!found) return false;
-  return found.smelters.includes(smelter);
 }

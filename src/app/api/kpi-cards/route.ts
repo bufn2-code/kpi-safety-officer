@@ -4,20 +4,32 @@ import {
   firestoreListCollection,
   firestoreSetDoc,
 } from "@/lib/firebase-admin";
-import { getCurrentUser } from "@/lib/session";
+import { getCurrentUser, type UserRole } from "@/lib/session";
 import {
+  getParamTargetForCategory,
+  getParamWeightForCategory,
   parseKpiParameterDoc,
   type KpiParameter,
 } from "@/app/api/admin/kpi-parameters/route";
 import {
   calculateDynamicScore,
   evaluateKpiResult,
+  evaluateSupervisorKpiResult,
+  formatPeriodDateRange,
   getKpiGrades,
   getScoringPolicy,
   type FormulaType,
   type GradeThreshold,
   type ScoringPolicy,
+  type TeamMemberKpiSummary,
 } from "@/lib/kpi-engine";
+import {
+  JOB_TITLES,
+  KPI_CATEGORIES,
+  KPI_CATEGORY_LABELS,
+  type JobTitle,
+  type KpiCategory,
+} from "@/lib/work-areas";
 
 export type KpiCardStatus = "draft" | "published";
 
@@ -34,15 +46,38 @@ export interface KpiEntryItem {
   notes: string;
 }
 
+export interface SupervisorBreakdown {
+  personalRawScore: number;
+  personalCoreScore: number;
+  personalBonusScore: number;
+  personalWeightPct: number;
+  personalWeightedScore: number;
+
+  teamWeightPct: number;
+  teamCalcMode: "option_a" | "option_b";
+  teamAverageScore: number;
+  baseTeamPoints: number;
+  failedMembersCount: number;
+  penaltyPerMember: number;
+  totalPenalty: number;
+  teamWeightedScore: number;
+
+  teamMembers: TeamMemberKpiSummary[];
+}
+
 export interface KpiCardRecord {
   id: string;
   uid: string;
   employeeId: string;
   userName: string;
+  jobTitle: JobTitle;
+  kpiCategory: KpiCategory;
+  kpiCategoryLabel: string;
   bufn: string;
   smelter: string;
   userUnit: string;
   period: string;
+  periodDateRange: string;
   status: KpiCardStatus;
   coreScore: number;
   bonusScore: number;
@@ -52,6 +87,7 @@ export interface KpiCardRecord {
   failedCoreCodes: string[];
   gradesScale: GradeThreshold[];
   policy: ScoringPolicy;
+  supervisorBreakdown?: SupervisorBreakdown;
   adminFeedback: string;
   entries: KpiEntryItem[];
   updatedAt: string;
@@ -64,6 +100,161 @@ function getDefaultPeriod(): string {
   const year = now.getFullYear();
   const month = String(now.getMonth() + 1).padStart(2, "0");
   return `${year}-${month}`;
+}
+
+function parseUserProfileFromFields(
+  uid: string,
+  f: Record<string, { stringValue?: string; booleanValue?: boolean }>
+) {
+  const role = (f.role?.stringValue || "safety_officer") as UserRole;
+  const bufn =
+    f.bufn?.stringValue || (role === "super_admin" ? "ALL" : "BUFN 1");
+  const smelter = f.smelter?.stringValue || "-";
+  const rawJob = f.jobTitle?.stringValue as JobTitle;
+  const jobTitle: JobTitle = JOB_TITLES.includes(rawJob)
+    ? rawJob
+    : "Safety Officer";
+
+  const rawCat = f.kpiCategory?.stringValue as KpiCategory;
+  const kpiCategory: KpiCategory =
+    jobTitle === "Wakil Supervisor"
+      ? "wakil_spv"
+      : KPI_CATEGORIES.includes(rawCat) && rawCat !== "wakil_spv"
+        ? rawCat
+        : "shift_3g2s";
+
+  return {
+    uid,
+    employeeId: f.employeeId?.stringValue || "",
+    name: f.name?.stringValue || "",
+    role,
+    jobTitle,
+    kpiCategory,
+    bufn,
+    smelter,
+    unit:
+      f.unit?.stringValue ||
+      (bufn === "ALL" ? "Comprehensive HSE" : `${bufn} - ${smelter}`),
+    isActive: f.isActive?.booleanValue ?? true,
+  };
+}
+
+async function computeTeamMembersForSupervisor(
+  spvBufn: string,
+  spvSmelter: string,
+  period: string,
+  grades: GradeThreshold[],
+  policy: ScoringPolicy
+): Promise<TeamMemberKpiSummary[]> {
+  const [allUserDocs, allCardDocs] = await Promise.all([
+    firestoreListCollection("users"),
+    firestoreListCollection("kpi_cards"),
+  ]);
+
+  // Map dokumen kartu periode tersebut berdasarkan uid
+  const cardByUid: Record<
+    string,
+    { entriesJson?: string; totalScore?: number }
+  > = {};
+  for (const cDoc of allCardDocs) {
+    const cf = cDoc.fields || {};
+    if (cf.period?.stringValue === period && cf.uid?.stringValue) {
+      cardByUid[cf.uid.stringValue] = {
+        entriesJson: cf.entriesJson?.stringValue,
+        totalScore:
+          cf.totalScore?.doubleValue ??
+          (cf.totalScore?.integerValue !== undefined
+            ? Number(cf.totalScore.integerValue)
+            : 0),
+      };
+    }
+  }
+
+  const members: TeamMemberKpiSummary[] = [];
+
+  for (const uDoc of allUserDocs) {
+    const uf = uDoc.fields || {};
+    const uid = uf.uid?.stringValue || uDoc.name?.split("/").pop() || "";
+    if (!uid) continue;
+    const profile = parseUserProfileFromFields(uid, uf);
+
+    // Anggota tim Wakil SPV = personel aktif di BUFN & Smelter yang sama, dan bukan Wakil Supervisor
+    if (
+      !profile.isActive ||
+      profile.role !== "safety_officer" ||
+      profile.jobTitle === "Wakil Supervisor" ||
+      profile.bufn !== spvBufn ||
+      profile.smelter !== spvSmelter
+    ) {
+      continue;
+    }
+
+    const savedCard = cardByUid[uid];
+    if (!savedCard?.entriesJson) {
+      // Belum dinilai pada bulan ini -> dianggap belum mencapai indikator wajib
+      members.push({
+        uid: profile.uid,
+        employeeId: profile.employeeId,
+        name: profile.name,
+        jobTitle: profile.jobTitle,
+        kpiCategory: KPI_CATEGORY_LABELS[profile.kpiCategory],
+        totalScore: 0,
+        hasFailedCore: true,
+        failedCoreCodes: ["Belum Dinilai"],
+        hasCardSaved: false,
+      });
+      continue;
+    }
+
+    try {
+      const parsedEntries = JSON.parse(
+        savedCard.entriesJson
+      ) as KpiEntryItem[];
+      const normalized = parsedEntries.map((item) => {
+        const fType = item.formulaType || "higher_better";
+        const score = calculateDynamicScore(
+          fType,
+          item.actual,
+          item.target,
+          item.weight
+        );
+        return {
+          code: item.code,
+          name: item.name,
+          formulaType: fType,
+          weight: Number(item.weight) || 0,
+          score,
+        };
+      });
+
+      const evalRes = evaluateKpiResult(normalized, grades, policy);
+      members.push({
+        uid: profile.uid,
+        employeeId: profile.employeeId,
+        name: profile.name,
+        jobTitle: profile.jobTitle,
+        kpiCategory: KPI_CATEGORY_LABELS[profile.kpiCategory],
+        totalScore: evalRes.totalScore,
+        hasFailedCore: evalRes.failedCoreCodes.length > 0,
+        failedCoreCodes: evalRes.failedCoreCodes,
+        hasCardSaved: true,
+      });
+    } catch {
+      members.push({
+        uid: profile.uid,
+        employeeId: profile.employeeId,
+        name: profile.name,
+        jobTitle: profile.jobTitle,
+        kpiCategory: KPI_CATEGORY_LABELS[profile.kpiCategory],
+        totalScore: 0,
+        hasFailedCore: true,
+        failedCoreCodes: ["Data Tidak Valid"],
+        hasCardSaved: false,
+      });
+    }
+  }
+
+  return members.sort((a, b) => a.name.localeCompare(b.name));
 }
 
 export async function GET(request: Request) {
@@ -85,21 +276,32 @@ export async function GET(request: Request) {
     const isAdmin = currentUser.role === "admin";
     const isAdminOrAbove = isSuperAdmin || isAdmin;
 
-    const targetUid = isAdminOrAbove ? requestedUid : currentUser.uid;
+    // Ambil profil pengguna yang sedang login untuk mengecek apakah ia Wakil Supervisor
+    const currentUserDoc = await firestoreGetDoc("users", currentUser.uid);
+    const loggedInProfile = currentUserDoc?.fields
+      ? parseUserProfileFromFields(currentUser.uid, currentUserDoc.fields)
+      : null;
+    const isLoggedInWakilSpv =
+      loggedInProfile?.jobTitle === "Wakil Supervisor";
 
-    const userDoc = await firestoreGetDoc("users", targetUid);
-    if (!userDoc?.fields) {
+    // Ambil profil pemilik kartu yang diminta
+    const targetUid =
+      isAdminOrAbove || isLoggedInWakilSpv ? requestedUid : currentUser.uid;
+    const targetUserDoc = await firestoreGetDoc("users", targetUid);
+    if (!targetUserDoc?.fields) {
       return NextResponse.json(
         { berhasil: false, pesan: "Profil personel tidak ditemukan." },
         { status: 404 }
       );
     }
 
-    const uFields = userDoc.fields;
-    const ownerBufn = uFields.bufn?.stringValue || "BUFN 1";
-    const ownerSmelter = uFields.smelter?.stringValue || "-";
+    const ownerInfo = parseUserProfileFromFields(
+      targetUid,
+      targetUserDoc.fields
+    );
 
-    if (isAdmin && ownerBufn !== currentUser.bufn) {
+    // Validasi Isolasi Akses:
+    if (isAdmin && ownerInfo.bufn !== currentUser.bufn) {
       return NextResponse.json(
         {
           berhasil: false,
@@ -109,18 +311,21 @@ export async function GET(request: Request) {
       );
     }
 
-    const ownerInfo = {
-      uid: targetUid,
-      employeeId: uFields.employeeId?.stringValue || currentUser.employeeId,
-      name: uFields.name?.stringValue || currentUser.name,
-      bufn: ownerBufn,
-      smelter: ownerSmelter,
-      unit:
-        uFields.unit?.stringValue ||
-        (ownerBufn === "ALL"
-          ? "Comprehensive HSE"
-          : `${ownerBufn} - ${ownerSmelter}`),
-    };
+    if (!isAdminOrAbove && isLoggedInWakilSpv && loggedInProfile) {
+      // Wakil SPV boleh melihat kartu miliknya sendiri atau anggota di BUFN & Smelter yang sama
+      const sameArea =
+        ownerInfo.bufn === loggedInProfile.bufn &&
+        ownerInfo.smelter === loggedInProfile.smelter;
+      if (targetUid !== currentUser.uid && !sameArea) {
+        return NextResponse.json(
+          {
+            berhasil: false,
+            pesan: `Akses ditolak. Anda hanya dapat memantau anggota di ${loggedInProfile.bufn} - ${loggedInProfile.smelter}.`,
+          },
+          { status: 403 }
+        );
+      }
+    }
 
     const docId = `${targetUid}_${period}`;
     const cardDoc = await firestoreGetDoc("kpi_cards", docId);
@@ -131,9 +336,13 @@ export async function GET(request: Request) {
       getScoringPolicy(),
     ]);
 
-    const activeParams = paramDocs
+    // Filter parameter aktif yang berlaku untuk kategori pola KPI pemilik kartu
+    const categoryParams = paramDocs
       .map(parseKpiParameterDoc)
-      .filter((p: KpiParameter) => p.isActive)
+      .filter(
+        (p: KpiParameter) =>
+          p.isActive && p.applicableCategories.includes(ownerInfo.kpiCategory)
+      )
       .sort(
         (a: KpiParameter, b: KpiParameter) =>
           a.order - b.order || a.code.localeCompare(b.code)
@@ -223,22 +432,24 @@ export async function GET(request: Request) {
                 notes: item.notes || "",
               };
             }
-            entries = activeParams.map((p: KpiParameter) => {
+            entries = categoryParams.map((p: KpiParameter) => {
               const prev = savedMap[p.id] || { actual: 0, notes: "" };
+              const t = getParamTargetForCategory(p, ownerInfo.kpiCategory);
+              const w = getParamWeightForCategory(p, ownerInfo.kpiCategory);
               return {
                 parameterId: p.id,
                 code: p.code,
                 name: p.name,
                 formulaType: p.formulaType || "higher_better",
                 unit: p.unit,
-                target: p.target,
-                weight: p.weight,
+                target: t,
+                weight: w,
                 actual: prev.actual,
                 score: calculateDynamicScore(
                   p.formulaType || "higher_better",
                   prev.actual,
-                  p.target,
-                  p.weight
+                  t,
+                  w
                 ),
                 notes: prev.notes,
               };
@@ -251,45 +462,110 @@ export async function GET(request: Request) {
     }
 
     if (entries.length === 0) {
-      entries = activeParams.map((p: KpiParameter) => ({
-        parameterId: p.id,
-        code: p.code,
-        name: p.name,
-        formulaType: p.formulaType || "higher_better",
-        unit: p.unit,
-        target: p.target,
-        weight: p.weight,
-        actual: 0,
-        score: calculateDynamicScore(
-          p.formulaType || "higher_better",
-          0,
-          p.target,
-          p.weight
-        ),
-        notes: "",
-      }));
+      entries = categoryParams.map((p: KpiParameter) => {
+        const t = getParamTargetForCategory(p, ownerInfo.kpiCategory);
+        const w = getParamWeightForCategory(p, ownerInfo.kpiCategory);
+        return {
+          parameterId: p.id,
+          code: p.code,
+          name: p.name,
+          formulaType: p.formulaType || "higher_better",
+          unit: p.unit,
+          target: t,
+          weight: w,
+          actual: 0,
+          score: calculateDynamicScore(
+            p.formulaType || "higher_better",
+            0,
+            t,
+            w
+          ),
+          notes: "",
+        };
+      });
     }
 
-    const evaluation = evaluateKpiResult(entries, gradesScale, activePolicy);
+    let coreScore = 0;
+    let bonusScore = 0;
+    let totalScore = 0;
+    let grade: GradeThreshold;
+    let gateTriggered = false;
+    let failedCoreCodes: string[] = [];
+    let supervisorBreakdown: SupervisorBreakdown | undefined;
+
+    if (ownerInfo.jobTitle === "Wakil Supervisor") {
+      const teamMembers = await computeTeamMembersForSupervisor(
+        ownerInfo.bufn,
+        ownerInfo.smelter,
+        period,
+        gradesScale,
+        activePolicy
+      );
+      const spvEval = evaluateSupervisorKpiResult(
+        entries,
+        teamMembers,
+        gradesScale,
+        activePolicy
+      );
+
+      coreScore = spvEval.personalCoreScore;
+      bonusScore = spvEval.personalBonusScore;
+      totalScore = spvEval.totalScore;
+      grade = spvEval.grade;
+      gateTriggered = spvEval.gateTriggered;
+      failedCoreCodes = spvEval.failedCoreCodes;
+
+      supervisorBreakdown = {
+        personalRawScore: spvEval.personalRawScore,
+        personalCoreScore: spvEval.personalCoreScore,
+        personalBonusScore: spvEval.personalBonusScore,
+        personalWeightPct: spvEval.personalWeightPct,
+        personalWeightedScore: spvEval.personalWeightedScore,
+
+        teamWeightPct: spvEval.teamWeightPct,
+        teamCalcMode: spvEval.teamCalcMode,
+        teamAverageScore: spvEval.teamAverageScore,
+        baseTeamPoints: spvEval.baseTeamPoints,
+        failedMembersCount: spvEval.failedMembersCount,
+        penaltyPerMember: spvEval.penaltyPerMember,
+        totalPenalty: spvEval.totalPenalty,
+        teamWeightedScore: spvEval.teamWeightedScore,
+
+        teamMembers,
+      };
+    } else {
+      const evaluation = evaluateKpiResult(entries, gradesScale, activePolicy);
+      coreScore = evaluation.coreScore;
+      bonusScore = evaluation.bonusScore;
+      totalScore = evaluation.totalScore;
+      grade = evaluation.grade;
+      gateTriggered = evaluation.gateTriggered;
+      failedCoreCodes = evaluation.failedCoreCodes;
+    }
 
     const card: KpiCardRecord = {
       id: docId,
       uid: ownerInfo.uid,
       employeeId: ownerInfo.employeeId,
       userName: ownerInfo.name,
+      jobTitle: ownerInfo.jobTitle,
+      kpiCategory: ownerInfo.kpiCategory,
+      kpiCategoryLabel: KPI_CATEGORY_LABELS[ownerInfo.kpiCategory],
       bufn: ownerInfo.bufn,
       smelter: ownerInfo.smelter,
       userUnit: ownerInfo.unit,
       period,
+      periodDateRange: formatPeriodDateRange(period, activePolicy),
       status,
-      coreScore: evaluation.coreScore,
-      bonusScore: evaluation.bonusScore,
-      totalScore: evaluation.totalScore,
-      grade: evaluation.grade,
-      gateTriggered: evaluation.gateTriggered,
-      failedCoreCodes: evaluation.failedCoreCodes,
+      coreScore,
+      bonusScore,
+      totalScore,
+      grade,
+      gateTriggered,
+      failedCoreCodes,
       gradesScale,
       policy: activePolicy,
+      supervisorBreakdown,
       adminFeedback,
       entries,
       updatedAt,
@@ -344,7 +620,7 @@ export async function POST(request: Request) {
       return NextResponse.json(
         {
           berhasil: false,
-          pesan: "Personel Safety Officer dan periode bulan wajib dipilih.",
+          pesan: "Personel dan periode bulan wajib dipilih.",
         },
         { status: 400 }
       );
@@ -353,20 +629,14 @@ export async function POST(request: Request) {
     const userDoc = await firestoreGetDoc("users", targetUid);
     if (!userDoc?.fields) {
       return NextResponse.json(
-        { berhasil: false, pesan: "Data Safety Officer tidak ditemukan." },
+        { berhasil: false, pesan: "Data personel tidak ditemukan." },
         { status: 404 }
       );
     }
 
-    const uFields = userDoc.fields;
-    const employeeId = uFields.employeeId?.stringValue || "";
-    const userName = uFields.name?.stringValue || "";
-    const ownerBufn = uFields.bufn?.stringValue || "BUFN 1";
-    const ownerSmelter = uFields.smelter?.stringValue || "-";
-    const userUnit =
-      uFields.unit?.stringValue || `${ownerBufn} - ${ownerSmelter}`;
+    const ownerInfo = parseUserProfileFromFields(targetUid, userDoc.fields);
 
-    if (isAdmin && ownerBufn !== currentUser.bufn) {
+    if (isAdmin && ownerInfo.bufn !== currentUser.bufn) {
       return NextResponse.json(
         {
           berhasil: false,
@@ -414,7 +684,37 @@ export async function POST(request: Request) {
       }
     );
 
-    const evaluation = evaluateKpiResult(entries, currentGrades, currentPolicy);
+    let coreScore = 0;
+    let bonusScore = 0;
+    let totalScore = 0;
+
+    if (ownerInfo.jobTitle === "Wakil Supervisor") {
+      const teamMembers = await computeTeamMembersForSupervisor(
+        ownerInfo.bufn,
+        ownerInfo.smelter,
+        period,
+        currentGrades,
+        currentPolicy
+      );
+      const spvEval = evaluateSupervisorKpiResult(
+        entries,
+        teamMembers,
+        currentGrades,
+        currentPolicy
+      );
+      coreScore = spvEval.personalCoreScore;
+      bonusScore = spvEval.personalBonusScore;
+      totalScore = spvEval.totalScore;
+    } else {
+      const evaluation = evaluateKpiResult(
+        entries,
+        currentGrades,
+        currentPolicy
+      );
+      coreScore = evaluation.coreScore;
+      bonusScore = evaluation.bonusScore;
+      totalScore = evaluation.totalScore;
+    }
 
     const docId = `${targetUid}_${period}`;
     const now = new Date().toISOString();
@@ -423,16 +723,18 @@ export async function POST(request: Request) {
     await firestoreSetDoc("kpi_cards", docId, {
       id: { stringValue: docId },
       uid: { stringValue: targetUid },
-      employeeId: { stringValue: employeeId },
-      userName: { stringValue: userName },
-      bufn: { stringValue: ownerBufn },
-      smelter: { stringValue: ownerSmelter },
-      userUnit: { stringValue: userUnit },
+      employeeId: { stringValue: ownerInfo.employeeId },
+      userName: { stringValue: ownerInfo.name },
+      jobTitle: { stringValue: ownerInfo.jobTitle },
+      kpiCategory: { stringValue: ownerInfo.kpiCategory },
+      bufn: { stringValue: ownerInfo.bufn },
+      smelter: { stringValue: ownerInfo.smelter },
+      userUnit: { stringValue: ownerInfo.unit },
       period: { stringValue: period },
       status: { stringValue: statusInput },
-      coreScore: { doubleValue: evaluation.coreScore },
-      bonusScore: { doubleValue: evaluation.bonusScore },
-      totalScore: { doubleValue: evaluation.totalScore },
+      coreScore: { doubleValue: coreScore },
+      bonusScore: { doubleValue: bonusScore },
+      totalScore: { doubleValue: totalScore },
       adminFeedback: { stringValue: adminFeedback },
       entriesJson: { stringValue: JSON.stringify(entries) },
       gradesJson: { stringValue: JSON.stringify(currentGrades) },
@@ -445,8 +747,8 @@ export async function POST(request: Request) {
       berhasil: true,
       pesan:
         statusInput === "published"
-          ? `Penilaian KPI ${userName} (${ownerBufn} - ${ownerSmelter}) periode ${period} berhasil disimpan & dipublikasikan.`
-          : `Draft penilaian KPI ${userName} (${period}) berhasil disimpan.`,
+          ? `Penilaian KPI ${ownerInfo.name} (${ownerInfo.jobTitle} • ${ownerInfo.bufn} - ${ownerInfo.smelter}) periode ${period} berhasil disimpan & dipublikasikan.`
+          : `Draft penilaian KPI ${ownerInfo.name} (${period}) berhasil disimpan.`,
     });
   } catch (error) {
     return NextResponse.json(
